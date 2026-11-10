@@ -1,6 +1,6 @@
 # Phase 3 — WireGuard profiles
 
-Status: **implemented in AOWIS-CONFIG for the native POSIX object backend**.
+Status: **implemented in AOWIS-CONFIG v0.3.0 for the native POSIX object backend**. See [Consumer integration](integration-guide.md) and [Operations](operations.md) for application responsibilities and sensitive-file handling.
 The GUI binding and AOWIS-NETWORK runtime integration belong to Phase 4.
 
 ## Storage and profile format

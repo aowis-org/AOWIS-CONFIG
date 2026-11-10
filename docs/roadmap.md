@@ -1,6 +1,6 @@
 # Implementation roadmap
 
-Status: **Phase 3 WireGuard profiles implemented; Phase 4 next**. Updated: 2026-11-10.
+Status: **Phase 3 WireGuard profiles implemented; Phase 4 next**. Updated: 2026-11-10. The [integration guide](integration-guide.md) and [verification matrix](testing.md) describe the handoff and current evidence.
 
 This roadmap is written for **AOWIS-CONFIG**. It distinguishes the reusable
 library from integrations into other repositories. Scope and turn counts are
@@ -31,7 +31,7 @@ and status views are not connected to actual configuration/runtime APIs.
 - [x] Implement validating `tools/apply_patch.sh` and source snapshot refresh.
 - [x] Implement `tools/zip_config_project.sh` producing `../config.zip`.
 - [x] Add disposable-checkout regression tests.
-- [x] Document the planned library architecture and roadmap (this patch).
+- [x] Document the architecture, roadmap, decision log and handoff.
 
 ## Phase 1 — independent C++20 foundation
 
@@ -174,7 +174,10 @@ share the same tested implementation without new ad-hoc format parsers.
       to a different home directory.
 - [ ] Fault injection, multi-process tests and security review across the
       supported filesystems and platforms.
-- [ ] Comprehensive public API docs, deployment docs and release checklist.
+- [x] Native developer quickstart, integration guide, API references, and
+      operations/troubleshooting documentation (documentation-only pass).
+- [ ] Per-platform deployment docs and release checklist once those backends
+      exist.
 
 **Acceptance:** Portability/security claims are backed by platform-specific
 checks; unsupported features report limitations clearly.

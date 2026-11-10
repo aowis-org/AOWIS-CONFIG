@@ -1,87 +1,38 @@
 # AOWIS-CONFIG
 
-**AOWIS-CONFIG** is an independent C++20 library for persistent
-configuration machinery across AOWIS applications and services. Its purpose is
-to share the *implementation and formats* of configuration management, **not**
-to make independent applications write to one shared configuration directory.
+**Configuration storage for the AOWIS ecosystem.** AOWIS-CONFIG is a small,
+independent **C++20 static library** for application-owned configuration:
+validated owner roots, versioned JSON records, UUIDv7 identities, atomic
+single-record updates, conflict detection, and imported WireGuard profiles.
 
-> **Implementation status (2026-11-10):** Phase 3 WireGuard profiles
-> and Phase 2 native POSIX object storage are implemented: UUIDv7 IDs,
-> versioned JSON records, private files, atomic single-record replacement,
-> cross-process locks and revisions.
-> **AOWIS-GUI integration and non-POSIX storage backends are not yet
-> implemented.** See [WireGuard profiles](docs/wireguard-profiles.md) and
-> [storage API](docs/storage-api.md).
+**Current release:** `0.3.0` · **Current milestone:** Phase 3 complete on native
+POSIX; Phase 4 (AOWIS-GUI integration) is next. This is a pre-1.0 project:
+public APIs and schemas may change. There are **no productive installations**
+requiring migration of AOWIS's experimental settings.
 
-## Read first
+> **Boundary:** A shared *library* does not imply a shared *configuration
+> directory*. `gui`, `gui-mobile`, `server-map`, `server-dvmdb` and other
+> owners have separate stores. AOWIS-CONFIG persists profiles; AOWIS-NETWORK
+> runs tunnels and reports their status.
 
-- [Architecture and requirements](docs/architecture.md) — ownership, paths,
-  persistence, WireGuard, security, portability, and API boundaries.
-- [Decisions and open questions](docs/decisions.md) — what was agreed and what
-  remains a design choice.
-- [Implementation roadmap](docs/roadmap.md) — staged work, tests, acceptance
-  criteria, and explicit removal of legacy storage.
-- [Development handoff](docs/handoff.md) — current state and precise next steps
-  for continuing in a new thread or checkout.
-- [Library API / consumption](docs/library-api.md) — public library API,
-  build scripts, CMake submodule and installed-package examples.
-- [Storage API](docs/storage-api.md) — implemented Phase 2 record format,
-  CRUD, optimistic locking, security and recovery guarantees.
-- [WireGuard profiles](docs/wireguard-profiles.md) — implemented Phase 3
-  import/edit/delete, validation, secret storage and reference guard.
+## Start here
 
-## Core rules
+| I want to… | Read |
+| --- | --- |
+| Build and test the repository | [Quickstart](docs/quickstart.md) |
+| Embed the library in an AOWIS component | [Consumer integration](docs/integration-guide.md) |
+| Understand current C++ entry points | [Library API](docs/library-api.md), [Storage API](docs/storage-api.md) |
+| Import and manage WireGuard profiles | [WireGuard profiles](docs/wireguard-profiles.md) |
+| Understand boundaries and filesystem ownership | [Architecture](docs/architecture.md) |
+| Back up, restore, or troubleshoot a configuration | [Operations and security](docs/operations.md) |
+| See what is tested and what is not | [Verification guide](docs/testing.md) |
+| Resume work or plan the next implementation | [Handoff](docs/handoff.md), [Roadmap](docs/roadmap.md) |
+| Review settled and unsettled decisions | [Decision log](docs/decisions.md) |
 
-1. One reusable C++20 configuration **library**; separate physical stores owned
-   by `gui`, `gui-mobile`, `server-map`, `server-dvmdb`, etc.
-2. No universal writable `shared/` configuration directory. Components may use
-   common schemas without silently sharing mutable objects.
-3. Persist reusable configuration objects by stable IDs, not paths to files
-   outside the AOWIS-owned configuration root.
-4. Import WireGuard `.conf` files into the **owning application's** storage,
-   preserving their text, including secret keys. A copied configuration tree
-   should contain everything AOWIS needs from that imported profile.
-5. Treat credentials as secrets, preserve restrictive permissions, and never
-   log them. No external keychain dependency is required for profile portability.
-6. AOWIS-CONFIG owns persistence, not network sessions. AOWIS-NETWORK owns
-   tunnel lifecycle, handshake/traffic status, and network transport behavior.
-7. Use deliberate breaking changes now: there are **no productive installations**
-   requiring migration from existing experimental settings formats. Replace
-   obsolete storage paths and remove dead compatibility implementations.
-8. Library consumers must opt in because they own persistent configuration.
-   Pure rendering, model, and compute libraries should receive typed values
-   rather than reading configuration files by themselves.
+## Build and test
 
-## Native owner storage layout
-
-```text
-~/.config/aowis/
-├── gui/
-│   ├── connections/<uuidv7>.json
-│   ├── unit-profiles/<uuidv7>.json
-│   └── wireguard/<uuidv7>.json
-├── gui-mobile/
-├── server-map/
-└── server-dvmdb/
-```
-
-Collections and private JSON envelope storage are implemented in Phase 2.
-Each object occupies **one atomic record**, with a component-owned payload.
-WireGuard Phase 3 stores metadata and complete imported `.conf` text
-in a single private JSON record; see [its API](docs/wireguard-profiles.md).
-Simple preferences representation is not yet decided.
-
-These directories are **independently owned**. They are created only as needed.
-System services may be configured with a separate explicit root such as
-`/etc/aowis/server-dvmdb/`; a GUI user's home directory is not a systemd
-service's configuration location. OS-specific roots are resolved by a storage
-adapter, not hard-coded into feature widgets.
-
-Do not confuse configuration with persistent operational data: DVMDB project
-repositories, working copies, caches, and other data have separate roots and
-are **not** migrated simply by copying `~/.config/aowis/`.
-
-## Build and test (Phases 2–3 implemented on native POSIX)
+Linux prerequisites: CMake 3.20+, Ninja, a C++20 compiler. Repository tooling
+also needs Python 3, Bash, `zip` and `unzip`.
 
 ```bash
 ./compile_linux.sh
@@ -89,52 +40,78 @@ are **not** migrated simply by copying `~/.config/aowis/`.
 python3 tests/repository_tooling_test.py
 ```
 
-CMake 3.20+, Ninja and a C++20 compiler are required for the scripts; Python
-3, Bash and ZIP utilities are used for repository tooling. The public CMake
-target is `aowis::config` (`add_subdirectory` or installed `AOWISConfig`
-package). See [library API](docs/library-api.md).
+The public CMake target is **`aowis::config`**. It can be used with
+`add_subdirectory(external/AOWIS-CONFIG)` or `find_package(AOWISConfig CONFIG
+REQUIRED)` after installation. There are **no mandatory Qt, DVMDB,
+AOWIS-NETWORK, or external JSON-library dependencies**. See the
+[quickstart](docs/quickstart.md) for complete commands and examples.
 
-## Repository tooling (implemented)
+## What's implemented
 
-### Apply source patches
+| Feature | State |
+| --- | --- |
+| Owner IDs and configuration-root resolution | Available (native POSIX and Windows path resolution) |
+| Strict JSON-object validation and UUIDv7 IDs | Available |
+| Private object collections; CRUD and revision tokens | **Native POSIX only** |
+| Atomic per-record publication, collection locks, interruption tests | **Native POSIX only** |
+| WireGuard profile import/edit/read/list/export/delete | **Native POSIX only** |
+| Lossless imported `.conf` text (including keys) inside owned JSON records | Available via WireGuard profiles API |
+| AOWIS-GUI persistence, connection references, and live status | **Not integrated yet (Phase 4)** |
+| Preference store, Windows storage, browser storage | **Not implemented** |
+| Cross-record transactions and hardware power-cut verification | **Not implemented / not established** |
 
-```bash
-cd ~/coding/aowis/AOWIS-CONFIG
-./tools/apply_patch.sh ~/Downloads/aowis-config-description.zip
+## Owner-scoped storage
+
+The native user layout is, for example:
+
+```text
+~/.config/aowis/
+├── gui/
+│   ├── wireguard/
+│   │   ├── .lock
+│   │   └── <uuidv7>.json
+│   ├── connections/        # planned GUI-owned records, not integrated yet
+│   └── unit-profiles/      # planned GUI-owned records, not integrated yet
+├── gui-mobile/             # separate owner, when configured
+├── server-map/             # separate owner, when configured
+└── server-dvmdb/           # separate owner, when configured
 ```
 
-Patches must have a filename `aowis-config-*.zip` and all members must live
-under the `AOWIS-CONFIG/` archive prefix. Replacements and additions are
-supported. Optional deletion manifest:
-`AOWIS-CONFIG/.aowis-patch-delete.txt` (one project-relative file path per
-line). The script validates entries, rejects unsafe paths and symlinks, updates
-file timestamps, and refreshes `../config.zip` after applying changes. File
-replacement is atomic **per file**, not across an entire patch. It does not
-stage or commit Git changes.
+Directories are created on demand. The POSIX collection backend stores each
+object in **one** JSON file, including a WireGuard profile's metadata and its
+original `.conf` text. Importing a `.conf` **copies its content into AOWIS**;
+the original path is not retained. Copying the owning configuration tree can
+transfer profiles and configuration references, but not DVMDB repositories,
+working copies, runtime state, external secrets, or endpoint reachability.
 
-### Create or refresh the source snapshot
+**Secret handling:** stored WireGuard configurations contain private keys.
+Owner/collection directories use restrictive permissions and files use `0600`;
+this is **not encryption**. Treat copies, archives, and exports as sensitive.
+See [operations and security](docs/operations.md).
+
+## Repository patch and snapshot workflow
+
+From `~/coding/aowis/AOWIS-CONFIG`:
 
 ```bash
-cd ~/coding/aowis/AOWIS-CONFIG
+./tools/apply_patch.sh ~/Downloads/aowis-config-description.zip
 ./tools/zip_config_project.sh
 ```
 
-This creates `~/coding/aowis/config.zip` from the repository source, with an
-`AOWIS-CONFIG/` top-level entry. Git metadata, build outputs, caches, and
-temporary files are excluded. The old snapshot is retained if creation fails.
+`apply_patch.sh` accepts `aowis-config-*.zip` with `AOWIS-CONFIG/` archive
+entries, validates paths and symlinks, applies additions/replacements and an
+optional `.aowis-patch-delete.txt` deletion manifest, and automatically
+refreshes **`../config.zip`**. Updates are atomic **per file**, not per patch.
+The source snapshot excludes `.git`, build products, and temporary files.
+The patch script does not stage or commit changes.
 
-### Run tooling tests
+## Project conventions
 
-```bash
-python3 tests/repository_tooling_test.py
-```
-
-The repository tooling has nine standalone regression tests; the C++ library
-has its own CTest suite. Tooling requires Bash, Python 3, `zip`, and `unzip`.
-
-## Source policy
-
-License: Apache-2.0 (see `LICENSE`). C++ core: C++20 with no mandatory
-Qt, DVMDB, or AOWIS-NETWORK dependencies. Follow the AOWIS source conventions:
-do not introduce `auto` for C++ local declarations, and use `this->` when
-accessing class members.
+- **Apache-2.0** (`LICENSE`); standard **C++20** core, with no mandatory Qt.
+- Do not use `auto` in C++ code; qualify member access with `this->`.
+- Components that *own* persistent configuration depend on AOWIS-CONFIG;
+  pure renderer/model libraries receive already-parsed values from callers.
+- Do not add compatibility readers or dual writers for pre-production GUI INI
+  formats. Remove obsolete implementations when each consumer is converted.
+- Keep the [roadmap](docs/roadmap.md) and [handoff](docs/handoff.md) accurate
+  as code lands; distinguish verified code from proposals.

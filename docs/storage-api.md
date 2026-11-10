@@ -1,6 +1,6 @@
 # Phase 2 — native object storage API
 
-Status: **implemented on native POSIX (including Linux)**, C++20, dependency-free.
+Status: **implemented in v0.3.0 on native POSIX (including Linux)**, C++20, dependency-free. For a minimal runnable program see [Quickstart](quickstart.md); for backup and recovery see [Operations](operations.md).
 Windows, Android-specific policy and Emscripten/browser persistence remain later
 platform work. This is **generic configuration object storage**. The typed WireGuard
 importer is now implemented above it in Phase 3; see
@@ -40,8 +40,8 @@ owning component; CONFIG validates JSON syntax, UTF-8, nesting limits and the
 envelope but not domain-specific fields. Components may additionally version
 their own payloads.
 
-**Single-record atomicity is intentional.** For the WireGuard use case, Phase
-3 can store imported configuration text as an escaped JSON string within the
+**Single-record atomicity is intentional.** The Phase 3 WireGuard layer
+stores imported configuration text as an escaped JSON string within the
 profile's payload alongside metadata. JSON escaping is lossless and the file
 contains the full imported text and private key. This avoids a partially
 installed `profile.json`/`tunnel.conf` pair. There is no stand-alone `.conf`

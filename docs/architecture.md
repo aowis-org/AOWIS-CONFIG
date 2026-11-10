@@ -1,6 +1,6 @@
 # Architecture and storage requirements
 
-Status: **Phase 3 WireGuard native persistence implemented; component integrations pending**. Updated: 2026-11-10.
+Status: **Phase 3 WireGuard native persistence implemented; Phase 4 consumer integration pending**. Updated: 2026-11-10. For executable examples see [Quickstart](quickstart.md); for GUI wiring see [Consumer integration](integration-guide.md).
 
 ## 1. Purpose and responsibility
 
@@ -57,7 +57,7 @@ can use different collections without creating empty directories for all
 hypothetical AOWIS modules.
 
 The root is explicit in the storage API: resolved from a known component ID and
-platform adapter or passed as an intentional override. The component ID must
+platform-specific path logic or passed as an intentional override. The component ID must
 be validated; arbitrary user text must not become a path. A service deployed
 under systemd may instead read from `/etc/aowis/server-dvmdb/` (or another
 explicit root), without depending on a GUI user's `HOME`. Consider read-only
@@ -142,7 +142,7 @@ races; a callback alone is not an atomic transaction.
 
 ### Managed profile storage
 
-An imported WireGuard file will be copied into the owner's managed
+An imported WireGuard file is copied into the owner's managed
 configuration collection as **one private atomic JSON object**:
 
 ```text
@@ -151,7 +151,7 @@ configuration collection as **one private atomic JSON object**:
 
 This supersedes the earlier illustrative two-file `profile.json` plus
 `tunnel.conf` layout: a single atomic record avoids partial updates and crash
-recovery ambiguity between two files. Its payload will contain profile
+recovery ambiguity between two files. Its payload contains profile
 metadata and the complete imported `.conf` text in a lossless JSON string,
 including comments, whitespace and private key material. It is **not** a
 path reference to the import source and **not** encryption. The exact
@@ -234,28 +234,31 @@ consumers, handshake age, byte counters and other live metrics belong in
 memory in the network/runtime subsystem and flow into the GUI via an explicit
 status interface.
 
-## 6. Core API boundaries (conceptual)
-
-The **shape** of the implementation is agreed, not exact C++ signatures:
+## 6. Implemented core and future integration boundaries
 
 ```text
-AOWIS applications/services
-  ├── component-owned schemas (connection, map settings, units...)
-  ├── AOWIS-CONFIG native C++20 facade
-  │     ├── owner-root resolution / platform storage adapters
-  │     ├── preferences (representation TBD)
-  │     ├── JSON object collections and stable IDs
-  │     ├── secure blob storage for imported .conf text
-  │     ├── validation, errors, conflicts and notifications
-  │     └── atomic I/O and recovery
-  └── AOWIS-NETWORK runtime (for tunnels and diagnostics)
+AOWIS applications/services (own their domain schemas and references)
+  ├── AOWIS-CONFIG 0.3.0 (native C++20 library, aowis::config)
+  │     ├── OwnerId + ConfigRoot (owner-scoped path resolution)
+  │     ├── ObjectCollection (JSON records, UUIDv7, revisions, POSIX I/O)
+  │     ├── WireGuardProfiles (text import/CRUD/validation, reference hook)
+  │     └── Result<T> / ErrorCode (checked failure handling)
+  ├── Future consumer-specific preferences, connections and unit schemas
+  └── AOWIS-NETWORK (WireGuard tunnels and live diagnostics)
 ```
 
-Potential operations include `list`, `read`, `create`, `update`, `delete`,
-`import`, `resolveReferences`, and (possibly) `watch`. The precise naming,
-errors, async model and CMake targets are pending. Core code should not require
-Qt types in public signatures. Optional adapters may bridge Qt and WASM/browser
-storage where appropriate without forcing them on server binaries.
+The native core actually exposes `ObjectCollection::{open,list,read,create,
+update,erase}`, `WireGuardProfiles::{open,list,read,importText,update,erase,
+exportText}`, UUIDv7 and validation APIs. See [Library API](library-api.md),
+[Storage API](storage-api.md) and [WireGuard profiles](wireguard-profiles.md)
+for the verified C++ contracts. A generic preferences API, file watchers,
+change notifications, cross-collection transactions, native Windows storage,
+and browser storage are **not** implemented. Do not implement or assume a
+hypothetical `resolveReferences` API: the deletion reference-count callback
+is supplied by the consuming application's catalogue.
+
+Platform adapters may be introduced later without imposing Qt on server
+components. The GUI consumes the library; it does not own its storage logic.
 
 ## 7. Existing experimental GUI storage to replace
 
@@ -274,5 +277,5 @@ We explicitly **do not** need backward-compatible readers or silent conversion
 of these experimental formats. When the owning integration phase arrives,
 remove legacy readers, writers, dead GUI code and old tests along with their
 replacement. Keep tests verifying new behavior rather than shipping two
-competing stores. This is a **separate integration phase**; this repo currently
-contains no GUI changes or storage implementation.
+competing stores. This is a **separate integration phase**: native storage and WireGuard
+profiles are implemented here, but this repository does not change the GUI.

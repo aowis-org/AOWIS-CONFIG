@@ -2,9 +2,11 @@
 
 Status: **architecture decisions; Phase 3 WireGuard native storage added**. Updated: 2026-11-10.
 
-This is the authoritative short record of decisions made before implementing
-AOWIS-CONFIG. See [architecture.md](architecture.md) for implications and
-[roadmap.md](roadmap.md) for the order of implementation.
+This is the authoritative short record of decisions established during the
+initial implementation of AOWIS-CONFIG. It distinguishes policy from features
+that have not yet been integrated into consuming applications. See [architecture.md](architecture.md) for implications,
+[roadmap.md](roadmap.md) for the order of implementation and
+[integration-guide.md](integration-guide.md) for consumer responsibilities.
 
 ## Agreed decisions
 

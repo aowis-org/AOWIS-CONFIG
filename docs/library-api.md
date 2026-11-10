@@ -1,6 +1,6 @@
 # Native library API and consumption (Phases 1–3)
 
-Status: **native C++20 foundation, POSIX object storage and WireGuard profile API implemented**.
+Status: **v0.3.0; native C++20 foundation, POSIX object storage and WireGuard profile API implemented**. For a runnable example see [Quickstart](quickstart.md); for consumers see [Integration guide](integration-guide.md).
 
 AOWIS-CONFIG is a C++20 static library that builds standalone without Qt,
 DVMDB, MAP or AOWIS-NETWORK. Public headers are in `include/aowis/config/`.
