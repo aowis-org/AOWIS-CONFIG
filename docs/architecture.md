@@ -1,6 +1,6 @@
 # Architecture and storage requirements
 
-Status: **target design; Phase 1 owner/root foundations implemented, persistence not implemented**. Updated: 2026-11-10.
+Status: **Phase 2 native POSIX storage implemented; component integrations pending**. Updated: 2026-11-10.
 
 ## 1. Purpose and responsibility
 
@@ -37,9 +37,7 @@ ${XDG_CONFIG_HOME:-~/.config}/aowis/
 │   ├── unit-profiles/
 │   │   └── <profile-uuid>.json
 │   └── wireguard/
-│       └── <profile-uuid>/
-│           ├── profile.json      # nonsecret name, description, ID
-│           └── tunnel.conf       # full imported WireGuard text; secret
+│       └── <profile-uuid>.json  # private single-record envelope; metadata + imported text
 ├── gui-mobile/
 │   └── ...
 ├── server-map/
@@ -142,29 +140,22 @@ races need a defined policy before persistence is considered production-ready.
 
 ### Managed profile storage
 
-An imported WireGuard file is copied into the owner's configuration tree:
+An imported WireGuard file will be copied into the owner's managed
+configuration collection as **one private atomic JSON object**:
 
 ```text
-<owner>/wireguard/<uuidv7>/profile.json
-<owner>/wireguard/<uuidv7>/tunnel.conf
+<owner>/wireguard/<uuidv7>.json
 ```
 
-The metadata contains only the reusable identity and descriptive fields:
-
-```json
-{
-  "schema_version": 1,
-  "id": "<wireguard-profile-uuidv7>",
-  "name": "Office VPN",
-  "description": "Access to the internal infrastructure"
-}
-```
-
-`tunnel.conf` contains the **complete** original text: `[Interface]`,
-`[Peer]`, directives, comments, whitespace, and private key material. Import
-reads the selected external `.conf`, validates/report issues, writes managed
-content, and **does not retain the import path as the profile's authority**.
-After import, edit and delete refer only to the stable profile ID.
+This supersedes the earlier illustrative two-file `profile.json` plus
+`tunnel.conf` layout: a single atomic record avoids partial updates and crash
+recovery ambiguity between two files. Its payload will contain profile
+metadata and the complete imported `.conf` text in a lossless JSON string,
+including comments, whitespace and private key material. It is **not** a
+path reference to the import source and **not** encryption. The exact
+WireGuard payload schema/codec is **Phase 3**, not implemented by Phase 2.
+See [storage-api.md](storage-api.md) for the implemented envelope, native
+permissions, locks and recovery.
 
 AOWIS-GUI's existing WireGuard editor is a `QPlainTextEdit` with
 `QSyntaxHighlighter` and a WASM-safe UI approach. Its currently implemented
@@ -204,7 +195,7 @@ A WireGuard `PrivateKey` is a secret. Current agreed first design favors
 **managed protected files**, not required OS-keychain references, so a copied
 configuration directory remains complete. On Linux:
 
-- Secret-containing files (such as `tunnel.conf`): mode `0600`.
+- Secret-containing files (including private JSON profile records): mode `0600`.
 - Secret-containing directories and sensitive ancestors under application
   control: mode `0700`.
 - Reject symlink/path-traversal attacks and ambiguous IDs/paths; do not follow
@@ -224,10 +215,11 @@ explicit additional design.
 ### Mutability and concurrency
 
 The object collections are mutable, but their owning application remains in
-control. Atomic replacement of a single file is not equivalent to a durable
-multi-file transaction. For metadata-plus-secret updates and deletions, the
-library needs a designed crash/restart recovery strategy (e.g. a serialized
-bundle or a transaction journal) before claiming all-or-nothing behavior.
+control. Phase 2 implements one atomic JSON record per object, so a
+metadata-plus-secret payload can be saved or deleted together, not as two
+independently mutable files. This intentionally does **not** guarantee atomic
+changes across multiple object IDs or collections. Such use cases need a
+separately designed cross-record transaction protocol.
 
 Two instances of **the same** application may still write the same owner root.
 Use locking and conflict detection; do not assume unique process access simply

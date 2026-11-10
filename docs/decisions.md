@@ -1,6 +1,6 @@
 # Architecture decisions and open questions
 
-Status: **design agreement, not implementation**. Updated: 2026-11-10.
+Status: **architecture decisions; Phase 2 native implementation added**. Updated: 2026-11-10.
 
 This is the authoritative short record of decisions made before implementing
 AOWIS-CONFIG. See [architecture.md](architecture.md) for implications and
@@ -31,7 +31,11 @@ AOWIS-CONFIG. See [architecture.md](architecture.md) for implications and
 | D19 | Separate configured connection identity from remote repository/service identity | Two connection definitions may point to the same repository through different endpoints/transports |
 | D20 | Include schema version in structured objects | Validate and reject unsupported versions; this is not a commitment to maintain legacy readers |
 | D21 | Phase 1 API uses `aowis::config`, CMake target `aowis::config`, and owner-scoped `ConfigRoot` | Native C++20 without Qt; explicit roots for system services, no implicit shared mutable directory |
-| D22 | Phase 1 avoids a mandatory JSON dependency | Application-owned schemas/serializers; Phase 2 must define and test JSON validation and persistence encoding |
+| D22 | Keep the core free of mandatory JSON dependencies | Phase 2 validates JSON using a small internal parser; applications own payload schemas |
+| D23 | Store each object as one private, atomic JSON envelope | Metadata and future imported WG text can update together; no two-file transaction ambiguity |
+| D24 | Native POSIX concurrency: collection `flock` plus expected revision tokens | Cooperating instances serialize I/O and reject stale edits/deletes |
+| D25 | Single-record durability scope, no multi-object transaction guarantee | `fsync` file, atomic publish, `fsync` directory; cross-record transactions require a separate design |
+| D26 | Reject insecure paths, symlinks and file permissions | Private 0700 owner/collection directories and 0600 files; no encryption implied |
 
 ## Clarifications that matter
 
@@ -65,15 +69,13 @@ phase. Resolve them explicitly when that phase begins.
    core versus continuing small native INI/QSettings preferences behind a
    generic adapter. Structured profiles are JSON regardless; the diagram's
    `preferences.json` is an *example*, not a ratified final format.
-2. **API after Phase 1:** initial namespace, CMake target, owner/root/error/result
-   types are now implemented (pre-1.0). Persistence operations, synchronous
-   versus asynchronous façade, and change notifications remain undecided.
-3. **Concurrency policy:** how conflicting writes by two instances of *the
-   same application* are detected/retried; lock scope and revision/version
-   semantics.
-4. **Durable transaction scope:** atomic replacement of an individual file is
-   mandatory; cross-file profile+secret updates and deletes must have a defined
-   recovery strategy before claiming crash consistency.
+2. **API after Phase 2:** synchronous native object collections now exist;
+   change notifications, watchers and optional async façade remain undecided.
+3. **Additional concurrency:** application-level reference integrity across
+   multiple collections and optional change notifications are still needed.
+4. **Cross-record transactions:** single record atomics are implemented;
+   if one operation must change several records, a journal or different
+   transaction design must be explicitly added.
 5. **Paths on Windows, Android, and WASM:** platform adapters and browser
    persistence where appropriate, without weakening ownership boundaries.
 6. **WireGuard configuration validation:** exact set of accepted directives,

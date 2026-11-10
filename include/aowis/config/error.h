@@ -4,13 +4,23 @@
 
 namespace aowis::config {
 
-// The error type is deliberately independent of Qt, errno, and exceptions.
-// File-system and data-format errors will be added when persistence lands.
+// Errors contain only contextual labels; never include secret payload text.
 enum class ErrorCode {
     invalid_owner_id,
     invalid_root,
     missing_environment,
     unsupported_platform,
+    invalid_collection,
+    invalid_object_id,
+    invalid_json,
+    unsupported_schema,
+    corrupt_object,
+    not_found,
+    conflict,
+    permission_denied,
+    unsafe_path,
+    io_failure,
+    object_too_large,
 };
 
 struct Error {

@@ -7,3 +7,7 @@ add_test(NAME aowis-config-core COMMAND aowis-config-core-tests)
 add_executable(aowis-config-consumer-smoke consumer/main.cpp)
 target_link_libraries(aowis-config-consumer-smoke PRIVATE aowis::config)
 add_test(NAME aowis-config-consumer-smoke COMMAND aowis-config-consumer-smoke)
+
+add_executable(aowis-config-object-store-tests object_store_test.cpp)
+target_link_libraries(aowis-config-object-store-tests PRIVATE aowis::config)
+add_test(NAME aowis-config-object-store COMMAND aowis-config-object-store-tests)

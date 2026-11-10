@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(AOWISConfig VERSION 0.1.0 LANGUAGES CXX)
+project(AOWISConfig VERSION 0.2.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -7,6 +7,9 @@ include(CMakePackageConfigHelpers)
 add_library(aowis-config STATIC
     src/owner_id.cpp
     src/config_root.cpp
+    src/object_id.cpp
+    src/json.cpp
+    src/object_store.cpp
 )
 add_library(aowis::config ALIAS aowis-config)
 set_target_properties(aowis-config PROPERTIES
@@ -54,6 +57,11 @@ install(FILES
 
 option(AOWIS_CONFIG_BUILD_TESTS "Build AOWIS-CONFIG tests" ${PROJECT_IS_TOP_LEVEL})
 if(AOWIS_CONFIG_BUILD_TESTS)
+    if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR AND UNIX AND NOT EMSCRIPTEN)
+        # Never present in installed/release builds: deterministic SIGKILL
+        # points exercise interrupted writes in a disposable test checkout.
+        target_compile_definitions(aowis-config PRIVATE AOWIS_CONFIG_TEST_FAULT_INJECTION)
+    endif()
     enable_testing()
     add_subdirectory(tests)
 endif()

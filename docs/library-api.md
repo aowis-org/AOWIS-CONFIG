@@ -1,6 +1,6 @@
-# Phase 1: native library API and consumption
+# Native library API and consumption (Phases 1–2)
 
-Status: **implemented foundation (not persistent configuration storage)**.
+Status: **native C++20 foundation and POSIX object storage implemented**.
 
 AOWIS-CONFIG is a C++20 static library that builds standalone without Qt,
 DVMDB, MAP or AOWIS-NETWORK. Public headers are in `include/aowis/config/`.
@@ -18,6 +18,7 @@ configures `build-linux-tests/`, builds the library and smoke consumers, and
 runs CTest, failing if any test fails. The Python suite checks patch/snapshot
 tooling separately. CMake 3.20+, C++20 compiler and Ninja are required by
 these scripts. The library itself has no third-party dependencies.
+Native POSIX object storage is described in [storage-api.md](storage-api.md).
 
 ## Public symbols
 
@@ -29,7 +30,7 @@ these scripts. The library itself has no third-party dependencies.
 | `config_root.h` | `ConfigRoot::fromNamespaceRoot(owner, absolute_path)` | Appends the validated owner to the explicit `aowis` namespace root |
 | `config_root.h` | `ConfigRoot::fromOwnerRoot(owner, absolute_path)` | Uses an explicit absolute owner root for e.g. `/etc/aowis/server-dvmdb` |
 | `config_root.h` | `ConfigRoot::forCurrentUser(owner)` | Resolves native user config root without writing to disk |
-| `version.h` | `version_major/minor/patch` | Current source API version: 0.1.0 |
+| `version.h` | `version_major/minor/patch` | Current source API version: 0.2.0 |
 
 `OwnerId` is a restricted path component: 1–63 ASCII characters, starts with
 `a`–`z`, followed by lowercase ASCII letters/digits, or single interior
@@ -45,11 +46,10 @@ Native user-root resolution:
 - Emscripten: returns `unsupported_platform`; a future browser adapter must
   implement browser persistence rather than assuming a native disk.
 
-An explicit owner root is available for system services and tests on every
-platform. Resolving a path **does not create it**, inspect it, or provide
-symlink safety, permissions, atomicity, or durability guarantees. Those
-requirements belong to Phase 2, and callers must not treat the resolved
-location as an approved secure write target yet.
+An explicit owner root is available for system services and tests. Resolving
+a `ConfigRoot` only names a path; `ObjectCollection::open()` on native POSIX
+performs the secure directory creation/checks before using that path. The
+Windows and Emscripten storage backends are not implemented.
 
 ```cpp
 #include <aowis/config/config_root.h>
@@ -100,15 +100,15 @@ of AOWIS-GUI and Qt.
 
 ## Deliberately not implemented yet
 
-- File creation, persistence, JSON/INI codecs, object stores, UUID generation,
-  permissions, cross-process locks, conflict checks, atomic writes.
-- WireGuard profile import/CRUD, secret handling, service references, runtime
-  diagnostics, Qt adapters, and integrations into other AOWIS repositories.
+- WireGuard-specific profile schema/import/validation, service reference
+  integrity checks and runtime diagnostics.
+- Simple preference storage format, Qt adapters and GUI/server integrations.
+- Windows/Android/browser persistence adapters and cross-object transactions.
 
-**Serialization boundary for now:** The core does not depend on a JSON
-library. Storage will carry opaque bytes/text and application-owned schemas
-will perform structured serialization; Phase 2 must finalize a validated
-JSON codec strategy without forcing domain semantics into the core.
+**Serialization boundary:** The core validates strict JSON and the versioned
+storage envelope. It does not interpret the application-owned JSON payload;
+component schemas and lossless `.conf` serialization are subsequent work.
+See [storage-api.md](storage-api.md).
 
 API is pre-1.0 and may change during the remaining foundation work. There is
 no historical data migration or ABI compatibility promise.

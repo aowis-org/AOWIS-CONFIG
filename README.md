@@ -5,10 +5,11 @@ configuration machinery across AOWIS applications and services. Its purpose is
 to share the *implementation and formats* of configuration management, **not**
 to make independent applications write to one shared configuration directory.
 
-> **Implementation status (2026-11-10):** Phase 1 foundation is implemented:
-> CMake library, public owner/root/error/result API, Linux build scripts,
-> independent consumer smoke and tests. **There is no persistent storage engine,
-> WireGuard import, or GUI integration yet.** See [library API](docs/library-api.md).
+> **Implementation status (2026-11-10):** Phase 2 native POSIX object storage
+> is implemented: UUIDv7 IDs, versioned JSON records, private files,
+> crash-safe single-record replacement, cross-process locks and revisions.
+> **WireGuard import, GUI integration and non-POSIX backends are not yet
+> implemented.** See [storage API](docs/storage-api.md).
 
 ## Read first
 
@@ -20,8 +21,10 @@ to make independent applications write to one shared configuration directory.
   criteria, and explicit removal of legacy storage.
 - [Development handoff](docs/handoff.md) — current state and precise next steps
   for continuing in a new thread or checkout.
-- [Library API / consumption](docs/library-api.md) — implemented Phase 1 interface,
+- [Library API / consumption](docs/library-api.md) — public library API,
   build scripts, CMake submodule and installed-package examples.
+- [Storage API](docs/storage-api.md) — implemented Phase 2 record format,
+  CRUD, optimistic locking, security and recovery guarantees.
 
 ## Core rules
 
@@ -45,21 +48,23 @@ to make independent applications write to one shared configuration directory.
    Pure rendering, model, and compute libraries should receive typed values
    rather than reading configuration files by themselves.
 
-## Intended native layout (illustrative)
+## Native owner storage layout
 
 ```text
 ~/.config/aowis/
 ├── gui/
-│   ├── preferences.json             # final preference format to be decided
-│   ├── connections/<uuid>.json
-│   ├── unit-profiles/<uuid>.json
-│   └── wireguard/<uuid>/
-│       ├── profile.json
-│       └── tunnel.conf
+│   ├── connections/<uuidv7>.json
+│   ├── unit-profiles/<uuidv7>.json
+│   └── wireguard/<uuidv7>.json
 ├── gui-mobile/
 ├── server-map/
 └── server-dvmdb/
 ```
+
+Collections and private JSON envelope storage are implemented in Phase 2.
+Each object occupies **one atomic record**, with a component-owned payload.
+WireGuard's eventual profile schema and exact imported-text JSON representation
+remain Phase 3 work. Simple preferences representation is not yet decided.
 
 These directories are **independently owned**. They are created only as needed.
 System services may be configured with a separate explicit root such as
@@ -71,7 +76,7 @@ Do not confuse configuration with persistent operational data: DVMDB project
 repositories, working copies, caches, and other data have separate roots and
 are **not** migrated simply by copying `~/.config/aowis/`.
 
-## Build and test (Phase 1 implemented)
+## Build and test (Phase 2 implemented on native POSIX)
 
 ```bash
 ./compile_linux.sh

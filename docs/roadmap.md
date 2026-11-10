@@ -1,6 +1,6 @@
 # Implementation roadmap
 
-Status: **Phase 1 implemented; Phase 2 next**. Updated: 2026-11-10.
+Status: **Phase 2 native POSIX storage implemented; Phase 3 next**. Updated: 2026-11-10.
 
 This roadmap is written for **AOWIS-CONFIG**. It distinguishes the reusable
 library from integrations into other repositories. Scope and turn counts are
@@ -13,8 +13,8 @@ and documentation have been reviewed and its acceptance conditions met.
 | --- | --- | --- |
 | 0. Repository tooling | **Complete** | `apply_patch.sh`, `zip_config_project.sh`, tooling tests |
 | 1. Library skeleton | **Complete** | C++20 library, CMake, public API baseline, compile scripts, tests |
-| 2. Persistence primitives | **Next** | Owner-scoped roots, JSON, atomic I/O, validation, concurrency/recovery |
-| 3. WireGuard object storage | Not started | Import, metadata, secure managed text, CRUD, ID references |
+| 2. Persistence primitives | **Complete (native POSIX)** | Owner-scoped roots, JSON envelopes, atomic I/O, validation, concurrency/recovery |
+| 3. WireGuard object storage | **Next** | Import, metadata, lossless managed text, CRUD, ID references |
 | 4. GUI WireGuard integration | Not started | Persistent GUI profiles; connection references; runtime diagnostics |
 | 5. GUI connection / unit / preference consolidation | Not started | Remove JSON/Qt blobs from INI and retire legacy storage |
 | 6. Other owner integrations | Not started | Mobile/server components opt in as needed |
@@ -54,32 +54,33 @@ export is exercised separately. No external services are required. See
 
 ## Phase 2 — storage engine and object collections
 
-Phase 1 supplies **path resolution only**, not secure directory access. Before
-storing credentials, the next phase must establish a safe file-opening/locking
-and recovery design. Code that merely returns a `ConfigRoot` is not a secure
-filesystem backend.
+Native POSIX implementation completed. The chosen single-record envelope
+avoids the need for multi-file `profile.json` + `tunnel.conf` transactions.
+Cross-record transactions and reference integrity remain explicitly out of
+scope until a consumer requires them. See [storage-api.md](storage-api.md).
 
-- [ ] Resolve the owner-scoped native config root from platform conventions or
-      an explicit override; enforce valid owner IDs and path containment.
-- [ ] Define durable file layout, JSON schema/version checks, structured
-      errors, object listing, reading, writing and deletion.
-- [ ] Generate stable UUIDv7 IDs for new objects; separate storage path from ID.
-- [ ] Implement restrictive permissions for secret-bearing files/directories,
-      symlink protection, and error-safe atomic replacement.
-- [ ] Define and implement concurrency/conflict semantics for multiple
-      processes sharing the **same owner** root.
-- [ ] Establish crash-recovery behavior for operations involving multiple
-      files, including create/update/delete of metadata plus secret payload.
-- [ ] Test corruption, unsupported schemas, power interruption/failure
-      injection, conflicting edits, permissions, path attacks and idempotent
-      cleanup.
+- [x] Validate owner paths, collection names and UUIDv7 identities.
+- [x] Define single-record JSON envelope (version, ID, revision, payload) and
+      strict JSON syntax/UTF-8 validation.
+- [x] Implement UUIDv7 generation, listing, reading, create, update, delete.
+- [x] Enforce 0700 directories and 0600 files, reject symlinks and unsafe paths.
+- [x] Implement temporary-file fsync, atomic publication and directory fsync;
+      remove orphan temporary files on restart/open.
+- [x] Implement cross-process collection locks and optimistic revisions to
+      reject stale updates/deletes.
+- [x] Test corruption, unsupported versions, permissions, invalid JSON,
+      relocation/copy, conflicting edits and injected process termination.
+- [ ] Test true power-loss durability on supported filesystems (Phase 7).
+- [ ] Implement corresponding Windows/Android/browser backends (Phase 7).
 
-**Acceptance:** Atomicity/durability claims have tests; existing objects never
-silently disappear or lose updates; errors are observable and actionable.
+**Acceptance on native POSIX:** Each object is a complete, durable record under
+normal POSIX fsync/rename guarantees. `SIGKILL` injection and restart recovery
+are tested, but are not equivalent to a physical power cut. Failures after
+publication may have an uncertain outcome and must be followed by re-read.
 
 ## Phase 3 — WireGuard profiles and secret-bearing import
 
-- [ ] Finalize profile metadata schema and managed raw `.conf` blob API.
+- [ ] Finalize profile payload schema and lossless imported `.conf` text codec.
 - [ ] Import `.conf` text into owner storage; discard original file path.
 - [ ] Preserve original comments/whitespace and private keys exactly; never
       convert it into a lossy field-by-field serialization.
