@@ -5,7 +5,7 @@ independent **C++20 static library** for application-owned configuration:
 validated owner roots, versioned JSON records, UUIDv7 identities, atomic
 single-record updates, conflict detection, and imported WireGuard profiles.
 
-**Current release:** `0.3.0` · **Current milestone:** Phase 3 complete on native
+**Current release:** `0.4.0` · **Current milestone:** Phase 3 complete on native
 POSIX; Phase 4 (AOWIS-GUI integration) is next. This is a pre-1.0 project:
 public APIs and schemas may change. There are **no productive installations**
 requiring migration of AOWIS's experimental settings.

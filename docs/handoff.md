@@ -7,7 +7,7 @@ targets are already implemented.**
 ## What the project is
 
 - Repository: **AOWIS-CONFIG**, an independent Apache-2.0 C++20 library
-  **implementing** native persistent-configuration machinery (v0.3.0).
+  **implementing** native persistent-configuration machinery (v0.4.0).
 - Component ownership: each application/service has its own storage root
   within `aowis/<owner>`; there is **no universal mutable `shared/` root**.
 - Code reuse: include/configure it as a pinned submodule only in components
@@ -29,14 +29,20 @@ CMake exports and installed-consumer smoke.
 
 **Phase 2 complete for native POSIX:** Versioned
 single-file JSON object collections, UUIDv7 IDs, 0700/0600 permissions,
-symlink-safe descriptor-based directory traversal, fsynced atomic writes,
-`flock` concurrency and optimistic revision checks, orphan temp recovery,
+symlink-safe descriptor-based directory traversal (trusted ancestors,
+`O_NOFOLLOW` from the owner directory down), fsynced atomic writes,
+time-limited `flock` concurrency and optimistic revision checks, orphan temp
+recovery, damaged-entry reporting in listings with `eraseCorrupt`,
 strict JSON syntax validation and tests. Public API is in
 [storage-api.md](storage-api.md).
 
 **Phase 3 complete for native POSIX:** `WireGuardProfiles`, typed payload
 codec, import/list/read/edit/rename/delete/export, text validation and
-portability warnings, reference lookup guards and tests. See
+portability warnings, reference lookup guards and tests. **v0.4.0
+hardening (pre-Phase 4 review):** wg(8)-compatible case-insensitive parsing,
+no false key-path warnings, lenient reads with `WireGuardProfile::validation`,
+single-pass `list()` returning unreadable records, `eraseUnreadable()`, and
+`lock_timeout`. See
 [wireguard-profiles.md](wireguard-profiles.md). **There is no AOWIS-GUI
 persistence binding yet.** Other storage backends and true power-loss tests
 remain Phase 7.

@@ -1,7 +1,7 @@
 # Integration guide — an AOWIS component as configuration owner
 
 **Target audience:** developers integrating AOWIS-CONFIG into AOWIS-GUI or a
-standalone AOWIS service. **Implemented library API:** v0.3.0 on native POSIX.
+standalone AOWIS service. **Implemented library API:** v0.4.0 on native POSIX.
 **Planned GUI wiring:** Phase 4; the steps below are an integration contract,
 not a claim that GUI code has already been changed.
 
@@ -83,6 +83,10 @@ Suggested UI flow:
 3. Use `validateWireGuardConfiguration()` for line-numbered issues. A warning
    is *not* an error, but it also is *not* proof of runtime compatibility.
 4. Use `list()` to populate the Settings list; use `read()` on selection.
+   Show `listing.unreadable` entries as damaged rows and offer
+   `eraseUnreadable()` after confirmation, so one broken file never hides the
+   others. Show `profile.validation` issues in the editor even for stored
+   profiles: an older profile may fail newer rules and must stay repairable.
 5. Use `update(id, expected_revision, input)` for edits and rename; reload on
    `conflict`. Refresh the list and consumers only after a successful save.
 6. Do not log full `WireGuardProfile`, exported configuration, JSON payloads,
@@ -136,7 +140,18 @@ network-layer policy—one running tunnel. Interface state is not peer reachabil
 Status views must show **real** runtime information or an explicit unavailable
 state; never fabricate traffic/handshake data from a stored profile.
 
-## 7. Platform and integration checklist
+## 7. Threading, locking and platform roots
+
+All calls are synchronous filesystem I/O with `fsync`. Run them off the Qt
+event-loop thread (or accept a short stall), and choose a `lock_timeout` the
+UI can tolerate; `lock_timeout` errors mean another instance is holding the
+collection and nothing changed.
+
+`ConfigRoot::forCurrentUser()` relies on `XDG_CONFIG_HOME`/`HOME`, which
+Android does not provide meaningfully. AOWIS-GUI-Mobile must pass an explicit
+root, e.g. `ConfigRoot::fromNamespaceRoot(owner, <QStandardPaths::AppConfigLocation>/aowis)`.
+
+## 8. Platform and integration checklist
 
 - [ ] WireGuard GUI uses an explicit `gui` owner root and linked `aowis::config`.
 - [ ] Import/rename/edit/delete persist and survive restart; no path references.

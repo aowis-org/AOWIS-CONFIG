@@ -105,6 +105,22 @@ failed callback fails closed. Structural validation blocks malformed text;
 portability warnings remain visible but do not rewrite stored configuration.
 No live tunnel status is stored by CONFIG.
 
+### Phase 3 hardening (v0.4.0, pre-Phase 4 review) — done
+
+- [x] Accept symlinked ancestors above the owner directory; keep `O_NOFOLLOW`
+      and privacy checks from the owner directory down.
+- [x] `list()`/`readAll()` report damaged entries in `unreadable` instead of
+      failing; `eraseCorrupt()` / `eraseUnreadable()` remove them safely.
+- [x] Single locked pass for `WireGuardProfiles::list()`.
+- [x] Lenient WireGuard reads (`WireGuardProfile::validation`); strict writes.
+- [x] wg(8)-compatible case-insensitive keys/sections and `#` comments; no
+      external-reference warning for base64 keys starting with `/`.
+- [x] Time-limited collection locks (`lock_timeout`); orphan recovery only on
+      `open()` and writes.
+- [ ] Pluggable storage backend interface (native POSIX, Windows, browser)
+      **before Phase 5**, so consolidated GUI settings do not need a second,
+      WASM-only persistence path.
+
 ## Phase 4 — AOWIS-GUI integration (separate repository)
 
 - [ ] Pin `AOWIS-CONFIG` as a submodule in AOWIS-GUI and link the native core.

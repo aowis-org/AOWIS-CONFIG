@@ -61,7 +61,18 @@ struct WireGuardProfileSummary {
 struct WireGuardProfile {
     WireGuardProfileSummary summary;
     std::string configuration;
-    std::vector<WireGuardIssue> issues; // Warnings for runtime support and portability.
+    // Validation of the stored text against the *current* rules. Writes are
+    // only accepted without errors, but read() never rejects a stored profile
+    // because the validator became stricter: has_errors may then be true and
+    // the editor must show the issues so the user can repair the text.
+    WireGuardValidation validation;
+};
+
+struct WireGuardProfileListing {
+    std::vector<WireGuardProfileSummary> profiles; // Sorted by ID.
+    // Records whose envelope or WireGuard payload cannot be decoded; remove
+    // them with WireGuardProfiles::eraseUnreadable() after user confirmation.
+    std::vector<UnreadableObject> unreadable;
 };
 
 // The owning application must query its authoritative configured-service
@@ -71,9 +82,11 @@ using WireGuardReferenceCount = std::function<Result<std::size_t>(const ObjectId
 
 class WireGuardProfiles final {
 public:
-    [[nodiscard]] static Result<WireGuardProfiles> open(const ConfigRoot &root);
+    [[nodiscard]] static Result<WireGuardProfiles> open(
+        const ConfigRoot &root, std::chrono::milliseconds lock_timeout = default_lock_timeout);
 
-    [[nodiscard]] Result<std::vector<WireGuardProfileSummary>> list() const;
+    // One locked pass over the collection; never fails because of one damaged record.
+    [[nodiscard]] Result<WireGuardProfileListing> list() const;
     [[nodiscard]] Result<WireGuardProfile> read(const ObjectId &id) const;
     [[nodiscard]] Result<WireGuardProfile> importText(const WireGuardProfileInput &input) const;
     [[nodiscard]] Result<WireGuardProfile> update(const ObjectId &id,
@@ -82,6 +95,12 @@ public:
     [[nodiscard]] Result<bool> erase(const ObjectId &id,
                                      std::string_view expected_revision,
                                      const WireGuardReferenceCount &reference_count) const;
+    // Removes a record listed as unreadable (corrupt envelope or not a
+    // decodable WireGuard profile). The reference guard is identical to
+    // erase(): an unreadable profile may still be referenced by connections.
+    // A record that decodes as a profile yields conflict; use erase().
+    [[nodiscard]] Result<bool> eraseUnreadable(const ObjectId &id,
+                                               const WireGuardReferenceCount &reference_count) const;
     [[nodiscard]] Result<std::string> exportText(const ObjectId &id) const;
 
 private:

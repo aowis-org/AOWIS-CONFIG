@@ -1,6 +1,6 @@
 # Phase 3 — WireGuard profiles
 
-Status: **implemented in AOWIS-CONFIG v0.3.0 for the native POSIX object backend**. See [Consumer integration](integration-guide.md) and [Operations](operations.md) for application responsibilities and sensitive-file handling.
+Status: **implemented in AOWIS-CONFIG v0.4.0 for the native POSIX object backend**. See [Consumer integration](integration-guide.md) and [Operations](operations.md) for application responsibilities and sensitive-file handling.
 The GUI binding and AOWIS-NETWORK runtime integration belong to Phase 4.
 
 ## Storage and profile format
@@ -68,17 +68,25 @@ aowis::config::Result<aowis::config::WireGuardProfile> created =
 | Operation | Contract |
 | --- | --- |
 | `validateWireGuardConfiguration(text)` | Returns line-numbered errors and warnings with no input values in diagnostic messages |
-| `WireGuardProfiles::open(root)` | Opens private `wireguard` object collection for this owner |
+| `WireGuardProfiles::open(root, lock_timeout=5s)` | Opens private `wireguard` object collection for this owner |
 | `importText(input)` | Validates and atomically creates a new UUIDv7 profile; does not take/keep source path |
-| `list()` | Returns IDs, revisions, names, descriptions; **no private configuration text** |
-| `read(id)` | Returns metadata, exact text, and current revision |
+| `list()` | `WireGuardProfileListing`: IDs, revisions, names, descriptions (**no private configuration text**) plus `unreadable` records; one locked pass |
+| `read(id)` | Returns metadata, exact text, current revision and `validation` against the current rules |
 | `update(id, revision, input)` | Saves metadata and text together; preserves ID; rejects stale revisions |
 | `exportText(id)` | Returns original text verbatim for explicit export; caller must protect exported secrets |
 | `erase(id, revision, reference_count)` | Rejects missing/failed reference checks, nonzero usage and stale revisions |
+| `eraseUnreadable(id, reference_count)` | Removes a record listed as unreadable (corrupt envelope, or not a decodable WireGuard profile) with the same reference guard; readable profile → `conflict` |
 
-`WireGuardProfile::issues` returns validation warnings on `importText`, `read`
-and `update`, allowing GUI callers to display portability/runtime caveats even
-if they did not call the standalone validator first. Diagnostics never echo
+`WireGuardProfile::validation` is returned by `importText`, `read` and
+`update`, allowing GUI callers to display portability/runtime caveats even if
+they did not call the standalone validator first. **Validation is strict on
+write and informational on read:** `importText`/`update` reject text with
+errors, but `read`, `list` and `exportText` never reject a structurally
+decodable profile because the validator became stricter in a later release.
+Such a profile is returned with `validation.has_errors == true`; the editor
+must show the issues and let the user repair it via `update`. Only a wrong
+`type`, an unknown `profile_version` or undecodable fields make a record
+unreadable. Diagnostics never echo
 source lines, private keys, URLs, script arguments, or directive values.
 
 ### Delete guards
@@ -108,7 +116,12 @@ cross-collection referential integrity under concurrency. Bare generic
 ## Validation scope and behavior
 
 Accepted sections are `[Interface]` (one required) and zero or more `[Peer]`
-sections. Nonempty `key = value` directives are required inside sections;
+sections. Like `wg(8)` and `wg-quick`, section names and keys are matched
+case-insensitively, blanks inside a section header are ignored and text from
+`#` to the end of a line is a comment (`[ peer ] # office` is valid). A value
+that is a 44-character base64 key is never treated as a file reference, even
+when it starts with `/` (an ordinary base64 character).
+Nonempty `key = value` directives are required inside sections;
 structural violations, invalid UTF-8/NUL, and configurations above 2 MiB are
 errors and prevent saving. Missing keys, unrecognized directives, wg-quick
 settings (such as `DNS`, `Address`, `MTU`), hook scripts and external key-file

@@ -238,7 +238,7 @@ status interface.
 
 ```text
 AOWIS applications/services (own their domain schemas and references)
-  ├── AOWIS-CONFIG 0.3.0 (native C++20 library, aowis::config)
+  ├── AOWIS-CONFIG 0.4.0 (native C++20 library, aowis::config)
   │     ├── OwnerId + ConfigRoot (owner-scoped path resolution)
   │     ├── ObjectCollection (JSON records, UUIDv7, revisions, POSIX I/O)
   │     ├── WireGuardProfiles (text import/CRUD/validation, reference hook)

@@ -1,6 +1,6 @@
 # Native library API and consumption (Phases 1–3)
 
-Status: **v0.3.0; native C++20 foundation, POSIX object storage and WireGuard profile API implemented**. For a runnable example see [Quickstart](quickstart.md); for consumers see [Integration guide](integration-guide.md).
+Status: **v0.4.0; native C++20 foundation, POSIX object storage and WireGuard profile API implemented**. For a runnable example see [Quickstart](quickstart.md); for consumers see [Integration guide](integration-guide.md).
 
 AOWIS-CONFIG is a C++20 static library that builds standalone without Qt,
 DVMDB, MAP or AOWIS-NETWORK. Public headers are in `include/aowis/config/`.
@@ -31,7 +31,7 @@ WireGuard import and profile management are described in [wireguard-profiles.md]
 | `config_root.h` | `ConfigRoot::fromNamespaceRoot(owner, absolute_path)` | Appends the validated owner to the explicit `aowis` namespace root |
 | `config_root.h` | `ConfigRoot::fromOwnerRoot(owner, absolute_path)` | Uses an explicit absolute owner root for e.g. `/etc/aowis/server-dvmdb` |
 | `config_root.h` | `ConfigRoot::forCurrentUser(owner)` | Resolves native user config root without writing to disk |
-| `version.h` | `version_major/minor/patch` | Current source API version: 0.3.0 |
+| `version.h` | `version_major/minor/patch` | Current source API version: 0.4.0 |
 | `object_store.h` | `ObjectCollection` | Native POSIX atomic JSON object CRUD and revision checks |
 | `wireguard_profiles.h` | `WireGuardProfiles`, validator | Typed, owner-scoped WireGuard profiles and diagnostics; see linked API |
 

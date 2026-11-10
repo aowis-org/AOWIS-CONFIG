@@ -23,6 +23,7 @@ using aowis::config::Result;
 using aowis::config::WireGuardIssueCode;
 using aowis::config::WireGuardProfile;
 using aowis::config::WireGuardProfileInput;
+using aowis::config::WireGuardProfileListing;
 using aowis::config::WireGuardProfiles;
 using aowis::config::WireGuardReferenceCount;
 using aowis::config::WireGuardValidation;
@@ -95,6 +96,32 @@ void validation()
             "oversized configuration accepted");
     const std::string bom = "\xef\xbb\xbf[Interface]\r\nPrivateKey = abc\r\n";
     require(aowis::config::validateWireGuardConfiguration(bom).valid(), "BOM rejected");
+
+    // '/' is a base64 character: a real key starting with it is not a path.
+    const WireGuardValidation slash_key = aowis::config::validateWireGuardConfiguration(
+        "[Interface]\nPrivateKey = /BCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=\n"
+        "[Peer]\nPublicKey = +BCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=\n"
+        "PresharedKey = /BCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=\n");
+    require(slash_key.valid() && slash_key.issues.empty(), "base64 key starting with '/' flagged as file path");
+    require(containsIssue(aowis::config::validateWireGuardConfiguration(
+                "[Interface]\nPrivateKey = /etc/wireguard/private.key\n"),
+            WireGuardIssueCode::external_reference), "absolute key path no longer flagged");
+
+    // wg(8)/wg-quick accept any case, blanks in headers and trailing comments.
+    const WireGuardValidation relaxed = aowis::config::validateWireGuardConfiguration(
+        "[interface]\nprivatekey = abc # note\naddress = 10.0.0.2/32\n"
+        "[ PEER ] # office\npublickey = def\nendpoint = vpn.example.invalid:51820\n");
+    require(relaxed.valid(), "case-insensitive WireGuard syntax rejected");
+    require(!containsIssue(relaxed, WireGuardIssueCode::missing_private_key), "lowercase PrivateKey not recognized");
+    require(!containsIssue(relaxed, WireGuardIssueCode::missing_peer_public_key), "lowercase PublicKey not recognized");
+    require(!containsIssue(relaxed, WireGuardIssueCode::unknown_directive), "lowercase standard directive unknown");
+    require(containsIssue(relaxed, WireGuardIssueCode::requires_wg_quick), "lowercase wg-quick directive not classified");
+    require(containsIssue(aowis::config::validateWireGuardConfiguration(
+                "[Interface]\nPrivateKey = abc\npostup = /bin/true\n"),
+            WireGuardIssueCode::external_command), "lowercase hook not flagged");
+    require(containsIssue(aowis::config::validateWireGuardConfiguration(
+                "[Interface]\nPrivateKey = abc\nPrivateKey = # only a comment\n"),
+            WireGuardIssueCode::empty_value), "comment-only value accepted");
 }
 
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
@@ -147,12 +174,12 @@ void lifecycle()
     const ObjectId id = created.value().summary.info.id;
     const std::string version_one = created.value().summary.info.revision;
     require(created.value().configuration == sample, "import changed formatting");
-    require(!created.value().issues.empty(), "import hid wg-quick portability warnings");
+    require(!created.value().validation.issues.empty(), "import hid wg-quick portability warnings");
     require(created.value().summary.name == input.name, "import changed name");
-    Result<std::vector<aowis::config::WireGuardProfileSummary>> summaries = profiles.list();
-    require(summaries && summaries.value().size() == 1, "list failed");
-    require(summaries.value().front().info.id.value() == id.value(), "summary lost id");
-    require(summaries.value().front().name == input.name, "summary lost name");
+    Result<WireGuardProfileListing> summaries = profiles.list();
+    require(summaries && summaries.value().profiles.size() == 1 && summaries.value().unreadable.empty(), "list failed");
+    require(summaries.value().profiles.front().info.id.value() == id.value(), "summary lost id");
+    require(summaries.value().profiles.front().name == input.name, "summary lost name");
     requireMode(one, 0700);
     requireMode(one / "wireguard", 0700);
     const std::filesystem::path record = one / "wireguard" / (id.value() + ".json");
@@ -209,7 +236,7 @@ void lifecycle()
         return Result<std::size_t>::success(0);
     });
     require(deleted && deleted.value(), "unreferenced profile deletion failed");
-    require(!reopened.read(id) && reopened.list().value().empty(), "deleted profile remains");
+    require(!reopened.read(id) && reopened.list().value().profiles.empty(), "deleted profile remains");
     require(relocated.read(id).hasValue(), "deletion in one root affected copied root");
 }
 
@@ -244,8 +271,71 @@ void errorsAndSchema()
     }
     Result<WireGuardProfile> wrong_type = profiles.read(id);
     require(!wrong_type && wrong_type.error().code == ErrorCode::corrupt_object, "wrong typed schema accepted");
-    require(!profiles.list(), "catalogue silently dropped invalid profile");
+    Result<WireGuardProfileListing> listed = profiles.list();
+    require(listed && listed.value().profiles.empty() && listed.value().unreadable.size() == 1
+            && listed.value().unreadable[0].id.has_value() && listed.value().unreadable[0].id->value() == id.value()
+            && listed.value().unreadable[0].error.code == ErrorCode::corrupt_object,
+            "catalogue silently dropped invalid profile");
     requireMode(filename, 0600);
+
+    // Unreadable records are removable, with the same reference guard as erase().
+    Result<bool> unguarded = profiles.eraseUnreadable(id, WireGuardReferenceCount{});
+    require(!unguarded && unguarded.error().code == ErrorCode::reference_unavailable, "unguarded unreadable delete");
+    Result<bool> referenced = profiles.eraseUnreadable(id, [](const ObjectId &) {
+        return Result<std::size_t>::success(1);
+    });
+    require(!referenced && referenced.error().code == ErrorCode::profile_in_use, "referenced unreadable deleted");
+    const WireGuardReferenceCount unused = [](const ObjectId &) { return Result<std::size_t>::success(0); };
+    require(profiles.eraseUnreadable(id, unused).hasValue(), "wrong-type record not removable");
+    require(!std::filesystem::exists(filename), "wrong-type record remains");
+
+    // A corrupt envelope is removable too; a readable profile is not.
+    Result<WireGuardProfile> broken = profiles.importText(invalid);
+    Result<WireGuardProfile> healthy = profiles.importText(invalid);
+    require(broken && healthy, "cannot seed corrupt envelope test");
+    const std::filesystem::path broken_file = location / "wireguard" / (broken.value().summary.info.id.value() + ".json");
+    {
+        std::ofstream output(broken_file, std::ios::trunc);
+        output << "{garbage";
+    }
+    listed = profiles.list();
+    require(listed && listed.value().profiles.size() == 1 && listed.value().unreadable.size() == 1,
+            "corrupt envelope hid healthy profile");
+    Result<bool> readable = profiles.eraseUnreadable(healthy.value().summary.info.id, unused);
+    require(!readable && readable.error().code == ErrorCode::conflict, "eraseUnreadable removed readable profile");
+    require(profiles.eraseUnreadable(broken.value().summary.info.id, unused).hasValue(), "corrupt envelope not removable");
+    require(profiles.list().value().unreadable.empty(), "removed corrupt envelope still listed");
+}
+
+void lenientRead()
+{
+    // A stored profile which the *current* validator rejects (e.g. after the
+    // rules were tightened) stays readable and repairable.
+    TemporaryDirectory directory;
+    const std::filesystem::path location = directory.path() / "gui";
+    WireGuardProfiles profiles = open(location);
+    WireGuardProfileInput input{"VPN", "", std::string(sample)};
+    Result<WireGuardProfile> created = profiles.importText(input);
+    require(created.hasValue(), "cannot seed lenient read test");
+    const ObjectId id = created.value().summary.info.id;
+    {
+        aowis::config::ObjectCollection generic = aowis::config::ObjectCollection::open(root(location), "wireguard").value();
+        require(generic.update(id, "{\"type\":\"wireguard-profile\",\"profile_version\":1,\"name\":\"VPN\","
+                                   "\"description\":\"\",\"configuration\":\"no longer valid\"}",
+                               created.value().summary.info.revision).hasValue(), "cannot seed outdated profile");
+    }
+    Result<WireGuardProfile> loaded = profiles.read(id);
+    require(loaded.hasValue(), "profile failing current validation became unreadable");
+    require(loaded.value().validation.has_errors && !loaded.value().validation.issues.empty(),
+            "validation errors of stored text not reported");
+    Result<WireGuardProfileListing> listed = profiles.list();
+    require(listed && listed.value().profiles.size() == 1 && listed.value().unreadable.empty(),
+            "outdated profile missing from list");
+    require(profiles.exportText(id).value() == "no longer valid", "outdated profile not exportable");
+    Result<WireGuardProfile> repaired = profiles.update(id, loaded.value().summary.info.revision, input);
+    require(repaired && repaired.value().validation.valid(), "outdated profile not repairable");
+    input.configuration = "still invalid";
+    require(!profiles.update(id, repaired.value().summary.info.revision, input), "invalid write accepted");
 }
 #endif
 } // namespace
@@ -257,6 +347,7 @@ int main()
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
         lifecycle();
         errorsAndSchema();
+        lenientRead();
 #endif
         std::cout << "WireGuard profile persistence tests passed\n";
         return 0;

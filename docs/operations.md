@@ -1,6 +1,6 @@
 # Operations, portability and secret safety
 
-This document describes the **native POSIX implementation in v0.3.0**. It is
+This document describes the **native POSIX implementation in v0.4.0**. It is
 not a deployment guide for unfinished Windows/WASM storage backends.
 
 ## What is stored where?
@@ -83,9 +83,10 @@ commands; AOWIS-NETWORK must enforce its own runtime directive policy.
 | --- | --- |
 | `invalid_owner_id`, `invalid_collection`, `invalid_root` | Caller supplied an invalid owner/collection/path; check identifiers and explicit roots |
 | `missing_environment`, `unsupported_platform` | No usable platform-specific root/backend; choose a supported platform or explicit native root |
-| `permission_denied`, `unsafe_path` | Ownership, mode, symlink or path-type rejection; inspect the path instead of bypassing the check |
+| `permission_denied`, `unsafe_path` | Ownership, mode, symlink (at or below the owner directory) or path-type rejection; inspect the path instead of bypassing the check |
+| `lock_timeout` | Another process held the collection lock past the timeout (hung instance, stalled filesystem); nothing changed, retry later |
 | `invalid_json`, `invalid_wireguard_profile` | Bad payload or blocking WireGuard validation; show diagnostics and let the user correct input |
-| `unsupported_schema`, `corrupt_object` | Store contains unknown or invalid records; preserve a backup and inspect compatibility/corruption; **do not** silently skip records |
+| `unsupported_schema`, `corrupt_object` | Store contains unknown or invalid records. Listings report them in `unreadable` instead of failing; preserve a backup, then remove `corrupt_object` records with `eraseCorrupt`/`eraseUnreadable`. `unsupported_schema` records belong to a newer release and are never removed by these calls |
 | `not_found`, `conflict` | Object was removed/changed or supplied revision is stale; re-list and re-read before retrying |
 | `profile_in_use`, `reference_unavailable` | Delete blocked by service references or missing authoritative catalogue; repair/reload the caller's reference lookup |
 | `io_failure`, `object_too_large` | Filesystem/sync or size limit; keep original content, report failure, re-read after uncertain publication |
@@ -96,8 +97,8 @@ the object and compare its contents before offering another save. Never assume
 an error guarantees that nothing changed.
 
 An interrupted pre-publication write may leave a `.tmp-<uuidv7>` file. The
-store checks and removes recognized orphan temporary files on a subsequent
-collection access. This is **not** a migration system or a general file repair
+store checks and removes recognized orphan temporary files on the next
+`open()` or write; readers ignore them. This is **not** a migration system or a general file repair
 utility. Avoid hand-editing or deleting object records while the application
 is using the collection; the envelope and revisions are significant.
 

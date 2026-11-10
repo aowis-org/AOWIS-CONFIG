@@ -11,8 +11,11 @@
 #include <vector>
 
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -25,6 +28,8 @@ using aowis::config::ErrorCode;
 using aowis::config::ObjectCollection;
 using aowis::config::ObjectId;
 using aowis::config::OwnerId;
+using aowis::config::ObjectListing;
+using aowis::config::ObjectSnapshot;
 using aowis::config::Result;
 using aowis::config::StoredObject;
 
@@ -112,13 +117,16 @@ void basicCrud()
     requireMode(root, 0700);
     requireMode(root / "wireguard", 0700);
     requireMode(root / "wireguard" / ".lock", 0600);
-    require(stored.list() && stored.list().value().empty(), "new collection not empty");
+    require(stored.list() && stored.list().value().objects.empty(), "new collection not empty");
     Result<StoredObject> created = stored.create("{\"conf\":\"[Interface]\\nPrivateKey = EXAMPLE\\n\",\"name\":\"Test\"}");
     require(created.hasValue(), "cannot create test object");
     const ObjectId id = created.value().info.id;
     requireMode(root / "wireguard" / (id.value() + ".json"), 0600);
-    require(stored.list() && stored.list().value().size() == 1, "listed record missing");
-    require(stored.list().value()[0].id.value() == id.value(), "listed wrong record ID");
+    require(stored.list() && stored.list().value().objects.size() == 1, "listed record missing");
+    require(stored.list().value().objects[0].id.value() == id.value(), "listed wrong record ID");
+    Result<ObjectSnapshot> snapshot = stored.readAll();
+    require(snapshot && snapshot.value().objects.size() == 1
+            && snapshot.value().objects[0].json == created.value().json, "readAll lost payload");
     Result<StoredObject> reloaded = stored.read(id);
     require(reloaded && reloaded.value().json == created.value().json, "payload lost on read");
     require(reloaded.value().info.revision == created.value().info.revision, "revision changed on read");
@@ -138,7 +146,7 @@ void basicCrud()
     require(stored.erase(id, updated.value().info.revision).hasValue(), "valid deletion failed");
     Result<StoredObject> missing = stored.read(id);
     require(!missing && missing.error().code == ErrorCode::not_found, "deleted record remains");
-    require(stored.list() && stored.list().value().empty(), "deleted record still listed");
+    require(stored.list() && stored.list().value().objects.empty(), "deleted record still listed");
     require(!stored.erase(id, updated.value().info.revision), "deleted twice");
 }
 
@@ -162,17 +170,46 @@ void validationAndCorruption()
     require(!stored.read(created.value().info.id)
             && stored.read(created.value().info.id).error().code == ErrorCode::corrupt_object,
             "corruption not detected");
-    require(!stored.list() && stored.list().error().code == ErrorCode::corrupt_object,
-            "corrupt object silently excluded from list");
+    // One damaged record must not hide the readable ones, and it must stay
+    // visible (not silently dropped) so a UI can offer to remove it.
+    Result<StoredObject> healthy = stored.create("{\"name\":\"b\"}");
+    require(healthy.hasValue(), "cannot seed healthy neighbour");
+    Result<ObjectListing> listed = stored.list();
+    require(listed && listed.value().objects.size() == 1
+            && listed.value().objects[0].id.value() == healthy.value().info.id.value(),
+            "corrupt record hid readable records");
+    require(listed.value().unreadable.size() == 1 && listed.value().unreadable[0].id.has_value()
+            && listed.value().unreadable[0].id->value() == created.value().info.id.value()
+            && listed.value().unreadable[0].error.code == ErrorCode::corrupt_object,
+            "corrupt record silently excluded from list");
+    Result<ObjectSnapshot> snapshot = stored.readAll();
+    require(snapshot && snapshot.value().objects.size() == 1 && snapshot.value().unreadable.size() == 1,
+            "readAll did not report corrupt record");
+    Result<bool> readable = stored.eraseCorrupt(healthy.value().info.id);
+    require(!readable && readable.error().code == ErrorCode::conflict, "eraseCorrupt deleted a readable record");
+    require(stored.read(healthy.value().info.id).hasValue(), "readable record removed");
+    require(stored.eraseCorrupt(created.value().info.id).hasValue(), "corrupt record could not be removed");
+    require(!std::filesystem::exists(file), "corrupt record file remains");
+    require(stored.list().value().unreadable.empty(), "removed corrupt record still listed");
+    Result<bool> gone = stored.eraseCorrupt(created.value().info.id);
+    require(!gone && gone.error().code == ErrorCode::not_found, "missing corrupt record not reported");
+
+    Result<StoredObject> future_record = stored.create("{\"name\":\"c\"}");
+    require(future_record.hasValue(), "cannot seed schema test");
+    const std::filesystem::path future_file = root / "wireguard" / (future_record.value().info.id.value() + ".json");
     {
-        std::ofstream output(file, std::ios::trunc);
-        output << "{\"schema_version\":2,\"id\":\"" << created.value().info.id.value()
-               << "\",\"revision\":\"" << created.value().info.revision
+        std::ofstream output(future_file, std::ios::trunc);
+        output << "{\"schema_version\":2,\"id\":\"" << future_record.value().info.id.value()
+               << "\",\"revision\":\"" << future_record.value().info.revision
                << "\",\"payload\":{}}";
     }
-    require(!stored.read(created.value().info.id)
-            && stored.read(created.value().info.id).error().code == ErrorCode::unsupported_schema,
+    require(!stored.read(future_record.value().info.id)
+            && stored.read(future_record.value().info.id).error().code == ErrorCode::unsupported_schema,
             "unsupported reader schema accepted");
+    Result<bool> future_erase = stored.eraseCorrupt(future_record.value().info.id);
+    require(!future_erase && future_erase.error().code == ErrorCode::unsupported_schema,
+            "eraseCorrupt deleted a record from a newer schema");
+    require(std::filesystem::exists(future_file), "newer-schema record removed");
 }
 
 void attacksAndPermissions()
@@ -182,7 +219,17 @@ void attacksAndPermissions()
     ObjectCollection stored = collection(root);
     const std::filesystem::path link = directory.path() / "link";
     std::filesystem::create_symlink(directory.path() / "real", link);
-    require(!ObjectCollection::open(ownerRoot(link / "gui"), "wireguard"), "symlink root accepted");
+    // A symlinked *ancestor* (/home -> /var/home, ~/.config -> dotfiles) is
+    // legitimate and reaches the same private owner directory.
+    Result<ObjectCollection> via_ancestor = ObjectCollection::open(ownerRoot(link / "gui"), "wireguard");
+    require(via_ancestor.hasValue(), "symlinked ancestor rejected");
+    Result<ObjectCollection> new_via_ancestor = ObjectCollection::open(ownerRoot(link / "fresh" / "gui"), "wireguard");
+    require(new_via_ancestor.hasValue() && std::filesystem::is_directory(directory.path() / "real" / "fresh" / "gui"),
+            "missing ancestor below a symlink not created");
+    // The owner directory itself is the security boundary and must not be a symlink.
+    std::filesystem::create_directory_symlink(root, directory.path() / "real" / "gui-link");
+    Result<ObjectCollection> owner_link = ObjectCollection::open(ownerRoot(directory.path() / "real" / "gui-link"), "wireguard");
+    require(!owner_link && owner_link.error().code == ErrorCode::unsafe_path, "symlink owner root accepted");
     std::filesystem::create_symlink(root / "wireguard", root / "evil");
     require(!ObjectCollection::open(ownerRoot(root), "evil"), "symlink collection accepted");
     Result<StoredObject> created = stored.create("{}");
@@ -192,7 +239,13 @@ void attacksAndPermissions()
     std::filesystem::create_symlink("/etc/passwd", file);
     Result<StoredObject> result = stored.read(created.value().info.id);
     require(!result && result.error().code == ErrorCode::unsafe_path, "symlink object followed");
-    require(!stored.list(), "list followed malicious symlink");
+    Result<ObjectListing> listed = stored.list();
+    require(listed && listed.value().objects.empty() && listed.value().unreadable.size() == 1
+            && listed.value().unreadable[0].error.code == ErrorCode::unsafe_path,
+            "list followed or hid malicious symlink");
+    Result<bool> symlink_erase = stored.eraseCorrupt(created.value().info.id);
+    require(!symlink_erase && symlink_erase.error().code == ErrorCode::unsafe_path
+            && std::filesystem::is_symlink(file), "eraseCorrupt touched an unsafe entry");
     std::filesystem::remove(file);
     require(::chmod((root / "wireguard").c_str(), 0755) == 0, "cannot alter test directory permissions");
     require(!ObjectCollection::open(ownerRoot(root), "wireguard"), "insecure collection accepted");
@@ -222,6 +275,10 @@ void crashRecovery()
             "pre-publish crash point not reached");
     require(stored.read(id) && stored.read(id).value().json == "{\"version\":1}",
             "pre-publish crash damaged last committed object");
+    // Readers skip orphans; the next open() or write removes them.
+    require(stored.list() && stored.list().value().objects.size() == 1 && stored.list().value().unreadable.empty(),
+            "orphan temp visible to readers");
+    require(ObjectCollection::open(ownerRoot(root), "wireguard").hasValue(), "reopen after crash failed");
     for (const std::filesystem::directory_entry &entry : std::filesystem::directory_iterator(root / "wireguard")) {
         require(!entry.path().filename().string().starts_with(".tmp-"), "orphan temp not recovered");
     }
@@ -285,8 +342,8 @@ void copyAndOwnerIsolation()
             "relocated owner lost payload or stable ID");
     const std::filesystem::path mobile_root = directory.path() / "origin" / "aowis" / "gui-mobile";
     ObjectCollection mobile = collection(mobile_root);
-    require(mobile.list() && mobile.list().value().empty(), "different owners share storage");
-    require(stored.list() && stored.list().value().size() == 1, "other owner affected original storage");
+    require(mobile.list() && mobile.list().value().objects.empty(), "different owners share storage");
+    require(stored.list() && stored.list().value().objects.size() == 1, "other owner affected original storage");
 }
 
 void additionalCorruptionAndSecurity()
@@ -317,8 +374,55 @@ void additionalCorruptionAndSecurity()
         std::ofstream output(root / "wireguard" / "not-a-uuid.json");
         output << "{}";
     }
-    require(!stored.list() && stored.list().error().code == ErrorCode::corrupt_object,
+    Result<ObjectListing> listed = stored.list();
+    require(listed && listed.value().unreadable.size() == 1
+            && listed.value().unreadable[0].filename == "not-a-uuid.json"
+            && !listed.value().unreadable[0].id.has_value()
+            && listed.value().unreadable[0].error.code == ErrorCode::corrupt_object,
             "unrecognized object file was silently skipped");
+}
+
+void lockTimeout()
+{
+    TemporaryDirectory directory;
+    const std::filesystem::path root = directory.path() / "gui";
+    ObjectCollection stored = collection(root);
+    Result<StoredObject> created = stored.create("{\"value\":1}");
+    require(created.hasValue(), "cannot seed lock test");
+    int ready[2]{};
+    int release[2]{};
+    require(::pipe(ready) == 0 && ::pipe(release) == 0, "cannot make lock sync pipes");
+    const pid_t child = ::fork();
+    require(child >= 0, "cannot fork lock holder");
+    if (child == 0) {
+        // Simulates a hung second instance holding the collection lock.
+        ::close(ready[0]);
+        ::close(release[1]);
+        const int lock = ::open((root / "wireguard" / ".lock").c_str(), O_RDWR | O_CLOEXEC);
+        if (lock < 0 || ::flock(lock, LOCK_EX) < 0) ::_exit(60);
+        if (::write(ready[1], "x", 1) != 1) ::_exit(61);
+        char signal = 0;
+        if (::read(release[0], &signal, 1) != 1) ::_exit(62);
+        ::_exit(0);
+    }
+    ::close(ready[1]);
+    ::close(release[0]);
+    char signal = 0;
+    require(::read(ready[0], &signal, 1) == 1, "lock holder did not start");
+    const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    Result<ObjectCollection> blocked = ObjectCollection::open(ownerRoot(root), "wireguard", std::chrono::milliseconds(100));
+    const std::chrono::steady_clock::duration waited = std::chrono::steady_clock::now() - started;
+    require(!blocked && blocked.error().code == ErrorCode::lock_timeout, "held lock did not time out");
+    require(waited >= std::chrono::milliseconds(100) && waited < std::chrono::seconds(3), "lock timeout not honoured");
+    Result<ObjectCollection> immediate = ObjectCollection::open(ownerRoot(root), "wireguard", std::chrono::milliseconds(0));
+    require(!immediate && immediate.error().code == ErrorCode::lock_timeout, "zero timeout blocked or succeeded");
+    require(::write(release[1], "x", 1) == 1, "cannot release lock holder");
+    ::close(release[1]);
+    ::close(ready[0]);
+    int status = 0;
+    require(::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+            "lock holder failed");
+    require(stored.read(created.value().info.id).hasValue(), "lock not usable after release");
 }
 
 #endif
@@ -337,6 +441,7 @@ int main()
         processConflicts();
         copyAndOwnerIsolation();
         additionalCorruptionAndSecurity();
+        lockTimeout();
 #endif
         std::cout << "AOWIS-CONFIG object store tests passed\n";
         return 0;

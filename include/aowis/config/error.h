@@ -24,6 +24,7 @@ enum class ErrorCode {
     invalid_wireguard_profile,
     profile_in_use,
     reference_unavailable,
+    lock_timeout,
 };
 
 struct Error {

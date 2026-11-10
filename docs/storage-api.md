@@ -1,6 +1,6 @@
 # Phase 2 — native object storage API
 
-Status: **implemented in v0.3.0 on native POSIX (including Linux)**, C++20, dependency-free. For a minimal runnable program see [Quickstart](quickstart.md); for backup and recovery see [Operations](operations.md).
+Status: **implemented in v0.4.0 on native POSIX (including Linux)**, C++20, dependency-free. For a minimal runnable program see [Quickstart](quickstart.md); for backup and recovery see [Operations](operations.md).
 Windows, Android-specific policy and Emscripten/browser persistence remain later
 platform work. This is **generic configuration object storage**. The typed WireGuard
 importer is now implemented above it in Phase 3; see
@@ -78,18 +78,27 @@ Public functions:
 | `ObjectId::parse(text)` | Accepts lowercase RFC 9562 UUIDv7 with correct variant and canonical hyphens |
 | `ObjectId::generate()` | Creates UUIDv7 from wall-clock milliseconds and OS randomness (`getrandom` on Linux) |
 | `validateJsonObject(text)` | Strict JSON object syntax and UTF-8 check; payload semantics are caller-owned |
-| `ObjectCollection::open(root, name)` | Validates collection name; opens/creates private owner and collection directories |
-| `list()` | Sorted IDs, schema versions, revisions, **no payload or secrets** |
+| `ObjectCollection::open(root, name, lock_timeout=5s)` | Validates collection name; opens/creates private owner and collection directories; removes crash orphans |
+| `list()` | `ObjectListing`: sorted IDs, schema versions, revisions (**no payload or secrets**) plus `unreadable` entries |
+| `readAll()` | `ObjectSnapshot`: every readable record with payload, plus `unreadable`, loaded under **one** lock |
 | `read(id)` | Returns the complete payload and revision token |
 | `create(json, schema_version=1)` | Validates and stores a new UUIDv7 record |
 | `update(id, json, expected_revision, schema_version=1)` | Replaces record only if revision still matches |
 | `erase(id, expected_revision)` | Deletes record only if revision still matches |
+| `eraseCorrupt(id)` | Deletes a record only while it is `corrupt_object` under the lock; readable → `conflict`; any other failure is returned and nothing is deleted |
 
 Revision tokens are opaque and change on every successful update. Always
 read a revision before editing or deleting. A missing object reports
 `not_found`, a stale/missing revision `conflict`, invalid JSON `invalid_json`,
-and unknown envelope versions `unsupported_schema`. A `list()` encountering
-corrupt stored data returns an error, **not a silently shortened catalogue**.
+and unknown envelope versions `unsupported_schema`. `list()`/`readAll()`
+never fail because of one damaged entry and never silently shorten the
+catalogue: every entry that cannot be loaded (corrupt JSON, wrong identity,
+unsafe permissions or symlink, newer schema, a `.json` name that is not a
+UUIDv7) is returned in `unreadable` with its filename, optional ID and error.
+Directory-level failures (lock, enumeration) still fail the whole call. A UI
+should show unreadable entries and offer `eraseCorrupt()` after confirmation;
+`unsupported_schema` records are never deleted by it, since a newer AOWIS
+release may still read them.
 Never include secret JSON in logging/error strings.
 
 The public core has no Qt types and no third-party runtime dependencies. Each
@@ -101,23 +110,32 @@ application-specific JSON-schema constraints.
 
 On native POSIX:
 
-- Traversal from `/` uses directory descriptors and `openat`/`mkdirat` with
-  `O_NOFOLLOW`; symlink components, collection-name traversal, unsafe types,
-  owner mismatches, and owner/collection directory permissions broader than
-  `0700` are rejected.
+- Traversal from `/` uses directory descriptors and `openat`/`mkdirat`.
+  **Ancestors of the owner directory are trusted** and may be symlinks
+  (`/home → /var/home`, `/var → /private/var`, a dotfile-managed `~/.config`);
+  missing ancestors are created `0700`. The owner directory is the security
+  boundary: it, the collection directory and every record are opened with
+  `O_NOFOLLOW`. Symlinks at or below the owner directory, collection-name
+  traversal, unsafe types, owner mismatches, and owner/collection directory
+  permissions broader than `0700` are rejected.
 - Owner and collection directories are created mode `0700`; the lock, object
   and temporary files are created mode `0600`. Existing weak permissions are
   rejected, not silently changed. No keychain encryption is implied.
 - Each collection has an advisory `flock` lock held around operations; writers
   use expected revision tokens to prevent silent lost updates between
-  cooperating processes. Calls are synchronous; no background worker or file
+  cooperating processes. The lock is polled non-blocking until the collection's
+  `lock_timeout` (default `default_lock_timeout`, 5 s; `0` = one attempt)
+  and then fails with `lock_timeout`, so a hung second instance cannot block
+  the caller forever. Calls are synchronous (two `fsync`s per write); a GUI
+  should call them off its event-loop thread. No background worker or file
   watcher is implemented.
 - New contents are written to an exclusive temporary file in the same
   directory, `fsync`ed, then published with a non-replacing link (create)
   or atomic rename (update), followed by directory `fsync`. Delete similarly
   `unlink`s the object and `fsync`s the directory.
-- On the next collection access, an interrupted pre-publication write's
-  `.tmp-<uuidv7>` orphan is checked and removed. No recovery process rewrites
+- On the next `open()` or write (`create`/`update`/`erase`/`eraseCorrupt`),
+  an interrupted pre-publication write's `.tmp-<uuidv7>` orphan is checked and
+  removed. Readers ignore orphans, so they are harmless until then. No recovery process rewrites
   already committed object data.
 - An I/O or sync failure after publication can have an **uncertain outcome**.
   Callers must re-read the record before retrying an operation. File-system

@@ -1,6 +1,6 @@
 # Quickstart — build, inspect and use the library
 
-This guide applies to **AOWIS-CONFIG 0.3.0** and the **native POSIX** object
+This guide applies to **AOWIS-CONFIG 0.4.0** and the **native POSIX** object
 store. Root *resolution* has a Windows code path, but object persistence does
 not yet have a Windows or Emscripten/browser backend.
 

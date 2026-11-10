@@ -25,14 +25,59 @@ std::string_view trim(std::string_view text)
     return text;
 }
 
+// wg(8) and wg-quick match section names and keys case-insensitively, so
+// "[interface]" / "privatekey" are valid and must not be rejected here.
+bool equalsIgnoreCase(std::string_view left, std::string_view right)
+{
+    if (left.size() != right.size()) return false;
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        char a = left[index];
+        char b = right[index];
+        if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+        if (a != b) return false;
+    }
+    return true;
+}
+
 bool existsIn(std::string_view key, std::initializer_list<std::string_view> names)
 {
-    return std::find(names.begin(), names.end(), key) != names.end();
+    for (std::string_view name : names) {
+        if (equalsIgnoreCase(key, name)) return true;
+    }
+    return false;
+}
+
+// A WireGuard key is 32 bytes in base64: 43 alphabet characters plus '='.
+// '/' and '+' are ordinary base64 characters, so about 1/64 of all real keys
+// start with '/', which must not be mistaken for an absolute file path.
+bool base64Key(std::string_view value)
+{
+    if (value.size() != 44 || value[43] != '=') return false;
+    for (std::size_t index = 0; index < 43; ++index) {
+        const char c = value[index];
+        const bool alphabet = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+            || (c >= '0' && c <= '9') || c == '+' || c == '/';
+        if (!alphabet) return false;
+    }
+    return true;
+}
+
+// wg(8) ignores whitespace inside section headers ("[ Peer ]").
+std::string withoutBlanks(std::string_view text)
+{
+    std::string compact;
+    compact.reserve(text.size());
+    for (char c : text) {
+        if (c != ' ' && c != '\t') compact += c;
+    }
+    return compact;
 }
 
 bool externalReference(std::string_view value)
 {
     value = trim(value);
+    if (base64Key(value)) return false;
     return value.starts_with('/') || value.starts_with("./") || value.starts_with("../")
         || value.starts_with('~') || value.starts_with("file:") || value.starts_with('@')
         || value.starts_with("$HOME") || value.starts_with("${HOME}");
@@ -120,15 +165,15 @@ Result<WireGuardProfile> decodeProfile(const StoredObject &record)
     if (!decoded_name || !decoded_description || !decoded_configuration) {
         return Result<WireGuardProfile>::failure({ErrorCode::corrupt_object, "WireGuard profile has invalid string fields"});
     }
-    WireGuardProfileInput input{decoded_name.value(), decoded_description.value(), decoded_configuration.value()};
-    if (!validInput(input)) {
-        return Result<WireGuardProfile>::failure({ErrorCode::corrupt_object, "WireGuard profile failed validation"});
-    }
+    // Validation is strict on write (importText/update) but never gates a
+    // read: tightening the validator in a later release must not make stored
+    // profiles unreadable, or the user could not open them to repair them.
+    // The record is structurally a profile; its text issues are reported.
     WireGuardValidation validation = validateWireGuardConfiguration(decoded_configuration.value());
     return Result<WireGuardProfile>::success({{record.info, std::move(decoded_name.value()),
                                                std::move(decoded_description.value())},
                                                std::move(decoded_configuration.value()),
-                                               std::move(validation.issues)});
+                                               std::move(validation)});
 }
 } // namespace
 
@@ -170,15 +215,20 @@ WireGuardValidation validateWireGuardConfiguration(std::string_view text)
             line.remove_prefix(3); // UTF-8 BOM is retained in stored text.
         }
         if (line.empty() || line.front() == '#' || line.front() == ';') continue;
+        // wg(8) and wg-quick strip everything from '#' to the end of a line,
+        // so "[Peer] # office" and "PrivateKey = ... # note" are valid.
+        line = trim(line.substr(0, line.find('#')));
+        if (line.empty()) continue;
         if (line.starts_with('[')) {
-            if (line == "[Interface]") {
+            const std::string header = withoutBlanks(line);
+            if (equalsIgnoreCase(header, "[Interface]")) {
                 if (has_interface) {
                     add(output, WireGuardIssueSeverity::error, WireGuardIssueCode::duplicate_interface,
                         line_number, "Only one [Interface] section is supported");
                 }
                 has_interface = true;
                 section = Section::interface;
-            } else if (line == "[Peer]") {
+            } else if (equalsIgnoreCase(header, "[Peer]")) {
                 if (has_peer && !peer_key) {
                     add(output, WireGuardIssueSeverity::warning, WireGuardIssueCode::missing_peer_public_key,
                         line_number, "Previous [Peer] has no PublicKey");
@@ -212,7 +262,7 @@ WireGuardValidation validateWireGuardConfiguration(std::string_view text)
             continue;
         }
         if (section == Section::interface) {
-            if (key == "PrivateKey") interface_key = true;
+            if (equalsIgnoreCase(key, "PrivateKey")) interface_key = true;
             if (existsIn(key, {"PreUp", "PostUp", "PreDown", "PostDown"})) {
                 add(output, WireGuardIssueSeverity::warning, WireGuardIssueCode::external_command,
                     line_number, "External hook commands may not work in embedded clients or after relocation");
@@ -223,22 +273,22 @@ WireGuardValidation validateWireGuardConfiguration(std::string_view text)
                 add(output, WireGuardIssueSeverity::warning, WireGuardIssueCode::unknown_directive,
                     line_number, "Unrecognized interface directive; runtime support is not guaranteed");
             }
-            if (key == "PrivateKey" && externalReference(value)) {
+            if (equalsIgnoreCase(key, "PrivateKey") && externalReference(value)) {
                 add(output, WireGuardIssueSeverity::warning, WireGuardIssueCode::external_reference,
                     line_number, "Private key looks like an external file reference and may not be portable");
             }
         } else {
-            if (key == "PublicKey") peer_key = true;
+            if (equalsIgnoreCase(key, "PublicKey")) peer_key = true;
             if (!existsIn(key, {"PublicKey", "PresharedKey", "AllowedIPs", "Endpoint", "PersistentKeepalive"})) {
                 add(output, WireGuardIssueSeverity::warning, WireGuardIssueCode::unknown_directive,
                     line_number, "Unrecognized peer directive; runtime support is not guaranteed");
             }
-            if (key == "PresharedKey" && externalReference(value)) {
+            if (equalsIgnoreCase(key, "PresharedKey") && externalReference(value)) {
                 add(output, WireGuardIssueSeverity::warning, WireGuardIssueCode::external_reference,
                     line_number, "Preshared key looks like an external file reference and may not be portable");
             }
         }
-        if (key == "Include" || key == "PrivateKeyFile" || key == "PresharedKeyFile") {
+        if (existsIn(key, {"Include", "PrivateKeyFile", "PresharedKeyFile"})) {
             add(output, WireGuardIssueSeverity::warning, WireGuardIssueCode::external_reference,
                 line_number, "External include or key-file directives may not be portable");
         }
@@ -257,9 +307,10 @@ WireGuardValidation validateWireGuardConfiguration(std::string_view text)
     return output;
 }
 
-Result<WireGuardProfiles> WireGuardProfiles::open(const ConfigRoot &root)
+Result<WireGuardProfiles> WireGuardProfiles::open(const ConfigRoot &root,
+                                                  std::chrono::milliseconds lock_timeout)
 {
-    Result<ObjectCollection> collection = ObjectCollection::open(root, "wireguard");
+    Result<ObjectCollection> collection = ObjectCollection::open(root, "wireguard", lock_timeout);
     if (!collection) return Result<WireGuardProfiles>::failure(collection.error());
     return Result<WireGuardProfiles>::success(WireGuardProfiles(std::move(collection.value())));
 }
@@ -271,18 +322,29 @@ Result<WireGuardProfile> WireGuardProfiles::read(const ObjectId &id) const
     return decodeProfile(stored.value());
 }
 
-Result<std::vector<WireGuardProfileSummary>> WireGuardProfiles::list() const
+Result<WireGuardProfileListing> WireGuardProfiles::list() const
 {
-    Result<std::vector<ObjectInfo>> objects = this->collection_.list();
-    if (!objects) return Result<std::vector<WireGuardProfileSummary>>::failure(objects.error());
-    std::vector<WireGuardProfileSummary> profiles;
-    profiles.reserve(objects.value().size());
-    for (const ObjectInfo &info : objects.value()) {
-        Result<WireGuardProfile> profile = this->read(info.id);
-        if (!profile) return Result<std::vector<WireGuardProfileSummary>>::failure(profile.error());
-        profiles.push_back(std::move(profile.value().summary));
+    // readAll() loads every record under one lock: no second read per
+    // profile, and no not_found failure when another instance deletes a
+    // profile between enumeration and reading.
+    Result<ObjectSnapshot> snapshot = this->collection_.readAll();
+    if (!snapshot) return Result<WireGuardProfileListing>::failure(snapshot.error());
+    WireGuardProfileListing listing;
+    listing.unreadable = std::move(snapshot.value().unreadable);
+    listing.profiles.reserve(snapshot.value().objects.size());
+    for (const StoredObject &record : snapshot.value().objects) {
+        Result<WireGuardProfile> profile = decodeProfile(record);
+        if (!profile) {
+            listing.unreadable.push_back({record.info.id.value() + ".json", record.info.id, profile.error()});
+            continue;
+        }
+        listing.profiles.push_back(std::move(profile.value().summary));
     }
-    return Result<std::vector<WireGuardProfileSummary>>::success(std::move(profiles));
+    std::sort(listing.unreadable.begin(), listing.unreadable.end(),
+              [](const UnreadableObject &left, const UnreadableObject &right) {
+        return left.filename < right.filename;
+    });
+    return Result<WireGuardProfileListing>::success(std::move(listing));
 }
 
 Result<WireGuardProfile> WireGuardProfiles::importText(const WireGuardProfileInput &input) const
@@ -327,6 +389,33 @@ Result<bool> WireGuardProfiles::erase(const ObjectId &id, std::string_view expec
                                       "WireGuard profile is used by configured services"});
     }
     return this->collection_.erase(id, expected_revision);
+}
+
+Result<bool> WireGuardProfiles::eraseUnreadable(const ObjectId &id,
+                                                const WireGuardReferenceCount &reference_count) const
+{
+    if (!reference_count) {
+        return Result<bool>::failure({ErrorCode::reference_unavailable,
+                                      "WireGuard profile deletion requires a configured-service reference check"});
+    }
+    Result<std::size_t> count = reference_count(id);
+    if (!count) return Result<bool>::failure(count.error());
+    if (count.value() != 0) {
+        return Result<bool>::failure({ErrorCode::profile_in_use,
+                                      "WireGuard profile is used by configured services"});
+    }
+    Result<StoredObject> stored = this->collection_.read(id);
+    if (!stored) {
+        if (stored.error().code == ErrorCode::corrupt_object) return this->collection_.eraseCorrupt(id);
+        return Result<bool>::failure(stored.error());
+    }
+    // Valid envelope, but possibly not a WireGuard profile: the envelope
+    // revision is trustworthy, so the ordinary revision-checked erase is used
+    // and a concurrent repair by another instance yields conflict.
+    if (decodeProfile(stored.value())) {
+        return Result<bool>::failure({ErrorCode::conflict, "WireGuard profile is readable; erase it with its revision"});
+    }
+    return this->collection_.erase(id, stored.value().info.revision);
 }
 
 Result<std::string> WireGuardProfiles::exportText(const ObjectId &id) const

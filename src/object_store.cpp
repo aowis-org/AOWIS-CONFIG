@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
@@ -156,8 +158,11 @@ Result<FileDescriptor> directoryAt(int parent, const std::string &name, bool res
     }
     FileDescriptor directory(::openat(parent, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
     if (!directory.valid()) {
-        return Result<FileDescriptor>::failure(
-            {ErrorCode::unsafe_path, "Configuration path contains a symlink or a non-directory component"});
+        if (errno == ELOOP || errno == ENOTDIR) {
+            return Result<FileDescriptor>::failure(
+                {ErrorCode::unsafe_path, "Configuration owner or collection directory is a symlink or not a directory"});
+        }
+        return Result<FileDescriptor>::failure(operatingError("Open configuration directory", errno));
     }
     struct stat status{};
     if (::fstat(directory.get(), &status) < 0) {
@@ -188,12 +193,31 @@ Result<FileDescriptor> collectionDirectory(const std::filesystem::path &root_pat
     if (segments.empty()) {
         return Result<FileDescriptor>::failure({ErrorCode::unsafe_path, "Filesystem root cannot be an owner directory"});
     }
-    for (std::size_t index = 0; index < segments.size(); ++index) {
-        Result<FileDescriptor> next = directoryAt(current.get(), segments[index], index + 1 == segments.size());
-        if (!next) return next;
-        current = std::move(next.value());
+    // Ancestors of the owner directory belong to the user's or system's
+    // filesystem layout, not to AOWIS: /home -> /var/home (Silverblue),
+    // /var -> /private/var (macOS) or a dotfile-managed ~/.config symlink are
+    // legitimate. They are followed and created on demand, but not
+    // permission-checked. The security boundary is the owner directory: it
+    // and everything below it are opened with O_NOFOLLOW and must be owned
+    // by the effective user with mode 0700, so a redirected ancestor can only
+    // lead to a directory that is already private to this user.
+    for (std::size_t index = 0; index + 1 < segments.size(); ++index) {
+        const int created = ::mkdirat(current.get(), segments[index].c_str(), 0700);
+        if (created < 0 && errno != EEXIST) {
+            return Result<FileDescriptor>::failure(operatingError("Create configuration ancestor directory", errno));
+        }
+        if (created == 0 && ::fsync(current.get()) < 0) {
+            return Result<FileDescriptor>::failure(operatingError("Sync parent after directory creation", errno));
+        }
+        FileDescriptor next(::openat(current.get(), segments[index].c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+        if (!next.valid()) {
+            return Result<FileDescriptor>::failure(operatingError("Open configuration ancestor directory", errno));
+        }
+        current = std::move(next);
     }
-    return directoryAt(current.get(), collection_name, true);
+    Result<FileDescriptor> owner = directoryAt(current.get(), segments.back(), true);
+    if (!owner) return owner;
+    return directoryAt(owner.value().get(), collection_name, true);
 }
 
 bool temporaryName(std::string_view name)
@@ -248,7 +272,11 @@ Result<bool> removeOrphanTemps(int directory)
 
 class Session final {
 public:
-    static Result<Session> acquire(const std::filesystem::path &root, const std::string &collection)
+    // recover=true removes orphan temporaries left by a crashed writer. Only
+    // mutating operations and open() need it: readers skip ".tmp-*" entries,
+    // so a leftover temporary is harmless until the next write.
+    static Result<Session> acquire(const std::filesystem::path &root, const std::string &collection,
+                                   std::chrono::milliseconds timeout, bool recover)
     {
         Result<FileDescriptor> directory = collectionDirectory(root, collection);
         if (!directory) return Result<Session>::failure(directory.error());
@@ -260,11 +288,25 @@ public:
             || status.st_uid != ::geteuid() || (status.st_mode & 0077) != 0) {
             return Result<Session>::failure({ErrorCode::unsafe_path, "Unsafe collection lock file"});
         }
-        if (::flock(lock.get(), LOCK_EX) < 0) {
-            return Result<Session>::failure(operatingError("Acquire collection lock", errno));
+        // Never block indefinitely: a hung second instance or a stalled
+        // network filesystem would otherwise freeze the caller's thread.
+        const std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::now() + std::max(timeout, std::chrono::milliseconds(0));
+        while (::flock(lock.get(), LOCK_EX | LOCK_NB) < 0) {
+            if (errno == EINTR) continue;
+            if (errno != EWOULDBLOCK) {
+                return Result<Session>::failure(operatingError("Acquire collection lock", errno));
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return Result<Session>::failure(
+                    {ErrorCode::lock_timeout, "Collection is locked by another process; retry later"});
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        Result<bool> recovered = removeOrphanTemps(directory.value().get());
-        if (!recovered) return Result<Session>::failure(recovered.error());
+        if (recover) {
+            Result<bool> recovered = removeOrphanTemps(directory.value().get());
+            if (!recovered) return Result<Session>::failure(recovered.error());
+        }
         return Result<Session>::success(Session(std::move(directory.value()), std::move(lock)));
     }
 
@@ -314,6 +356,53 @@ Result<StoredObject> loadRecord(int directory, const ObjectId &id)
     Result<std::string> text = readFile(directory, id);
     if (!text) return Result<StoredObject>::failure(text.error());
     return decodeRecord(text.value(), id);
+}
+
+// One locked directory pass. Directory-level failures abort; per-entry
+// failures are reported as UnreadableObject so one damaged file cannot hide
+// every other record (and the damaged one stays visible for repair).
+Result<ObjectSnapshot> enumerate(int directory, bool keep_payload)
+{
+    const int copied = ::openat(directory, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (copied < 0) return Result<ObjectSnapshot>::failure(operatingError("Duplicate collection directory", errno));
+    DIR *stream = ::fdopendir(copied);
+    if (stream == nullptr) {
+        const int failure = errno;
+        ::close(copied);
+        return Result<ObjectSnapshot>::failure(operatingError("Enumerate collection", failure));
+    }
+    ObjectSnapshot snapshot;
+    while (true) {
+        errno = 0;
+        const dirent *entry = ::readdir(stream);
+        if (entry == nullptr) break;
+        const std::string name(entry->d_name);
+        if (!name.ends_with(".json")) continue; // ".", "..", ".lock" and ".tmp-*" never end in .json.
+        Result<ObjectId> id = ObjectId::parse(std::string_view(name).substr(0, name.size() - 5));
+        if (!id) {
+            snapshot.unreadable.push_back({name, std::nullopt,
+                {ErrorCode::corrupt_object, "Collection entry is not a UUIDv7 object filename"}});
+            continue;
+        }
+        Result<StoredObject> record = loadRecord(directory, id.value());
+        if (!record) {
+            snapshot.unreadable.push_back({name, id.value(), record.error()});
+            continue;
+        }
+        if (!keep_payload) record.value().json.clear();
+        snapshot.objects.push_back(std::move(record.value()));
+    }
+    const int iteration_error = errno;
+    ::closedir(stream);
+    if (iteration_error != 0) return Result<ObjectSnapshot>::failure(operatingError("Enumerate collection", iteration_error));
+    std::sort(snapshot.objects.begin(), snapshot.objects.end(), [](const StoredObject &left, const StoredObject &right) {
+        return left.info.id.value() < right.info.id.value();
+    });
+    std::sort(snapshot.unreadable.begin(), snapshot.unreadable.end(),
+              [](const UnreadableObject &left, const UnreadableObject &right) {
+        return left.filename < right.filename;
+    });
+    return Result<ObjectSnapshot>::success(std::move(snapshot));
 }
 
 Result<bool> writeFileFully(int descriptor, std::string_view contents)
@@ -402,7 +491,8 @@ Result<std::string> newRevision()
 #endif
 } // namespace
 
-Result<ObjectCollection> ObjectCollection::open(const ConfigRoot &root, std::string_view collection)
+Result<ObjectCollection> ObjectCollection::open(const ConfigRoot &root, std::string_view collection,
+                                                std::chrono::milliseconds lock_timeout)
 {
     Result<OwnerId> checked = OwnerId::parse(collection);
     if (!checked) {
@@ -410,57 +500,41 @@ Result<ObjectCollection> ObjectCollection::open(const ConfigRoot &root, std::str
     }
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
     static_cast<void>(root);
+    static_cast<void>(lock_timeout);
     return Result<ObjectCollection>::failure({ErrorCode::unsupported_platform,
                                                "Native POSIX storage backend unavailable on this platform"});
 #else
-    Result<Session> session = Session::acquire(root.path(), checked.value().value());
+    Result<Session> session = Session::acquire(root.path(), checked.value().value(), lock_timeout, true);
     if (!session) return Result<ObjectCollection>::failure(session.error());
-    return Result<ObjectCollection>::success(ObjectCollection(root.path(), checked.value().value()));
+    return Result<ObjectCollection>::success(ObjectCollection(root.path(), checked.value().value(), lock_timeout));
 #endif
 }
 
-Result<std::vector<ObjectInfo>> ObjectCollection::list() const
+Result<ObjectListing> ObjectCollection::list() const
 {
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
-    return Result<std::vector<ObjectInfo>>::failure({ErrorCode::unsupported_platform, "Native storage unavailable"});
+    return Result<ObjectListing>::failure({ErrorCode::unsupported_platform, "Native storage unavailable"});
 #else
-    Result<Session> session = Session::acquire(this->root_path_, this->name_);
-    if (!session) return Result<std::vector<ObjectInfo>>::failure(session.error());
-    const int copied = ::openat(session.value().directory(), ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (copied < 0) return Result<std::vector<ObjectInfo>>::failure(operatingError("Duplicate collection directory", errno));
-    DIR *stream = ::fdopendir(copied);
-    if (stream == nullptr) {
-        const int failure = errno;
-        ::close(copied);
-        return Result<std::vector<ObjectInfo>>::failure(operatingError("Enumerate collection", failure));
-    }
-    std::vector<ObjectInfo> records;
-    while (true) {
-        errno = 0;
-        const dirent *entry = ::readdir(stream);
-        if (entry == nullptr) break;
-        const std::string name(entry->d_name);
-        if (name == "." || name == ".." || name == ".lock") continue;
-        if (!name.ends_with(".json")) continue;
-        Result<ObjectId> id = ObjectId::parse(std::string_view(name).substr(0, name.size() - 5));
-        if (!id) {
-            ::closedir(stream);
-            return Result<std::vector<ObjectInfo>>::failure({ErrorCode::corrupt_object, "Collection contains an invalid JSON object filename"});
-        }
-        Result<StoredObject> record = loadRecord(session.value().directory(), id.value());
-        if (!record) {
-            ::closedir(stream);
-            return Result<std::vector<ObjectInfo>>::failure(record.error());
-        }
-        records.push_back(record.value().info);
-    }
-    const int iteration_error = errno;
-    ::closedir(stream);
-    if (iteration_error != 0) return Result<std::vector<ObjectInfo>>::failure(operatingError("Enumerate collection", iteration_error));
-    std::sort(records.begin(), records.end(), [](const ObjectInfo &left, const ObjectInfo &right) {
-        return left.id.value() < right.id.value();
-    });
-    return Result<std::vector<ObjectInfo>>::success(std::move(records));
+    Result<Session> session = Session::acquire(this->root_path_, this->name_, this->lock_timeout_, false);
+    if (!session) return Result<ObjectListing>::failure(session.error());
+    Result<ObjectSnapshot> snapshot = enumerate(session.value().directory(), false);
+    if (!snapshot) return Result<ObjectListing>::failure(snapshot.error());
+    ObjectListing listing;
+    listing.objects.reserve(snapshot.value().objects.size());
+    for (StoredObject &record : snapshot.value().objects) listing.objects.push_back(std::move(record.info));
+    listing.unreadable = std::move(snapshot.value().unreadable);
+    return Result<ObjectListing>::success(std::move(listing));
+#endif
+}
+
+Result<ObjectSnapshot> ObjectCollection::readAll() const
+{
+#if defined(_WIN32) || defined(__EMSCRIPTEN__)
+    return Result<ObjectSnapshot>::failure({ErrorCode::unsupported_platform, "Native storage unavailable"});
+#else
+    Result<Session> session = Session::acquire(this->root_path_, this->name_, this->lock_timeout_, false);
+    if (!session) return Result<ObjectSnapshot>::failure(session.error());
+    return enumerate(session.value().directory(), true);
 #endif
 }
 
@@ -470,7 +544,7 @@ Result<StoredObject> ObjectCollection::read(const ObjectId &id) const
     static_cast<void>(id);
     return Result<StoredObject>::failure({ErrorCode::unsupported_platform, "Native storage unavailable"});
 #else
-    Result<Session> session = Session::acquire(this->root_path_, this->name_);
+    Result<Session> session = Session::acquire(this->root_path_, this->name_, this->lock_timeout_, false);
     if (!session) return Result<StoredObject>::failure(session.error());
     return loadRecord(session.value().directory(), id);
 #endif
@@ -488,7 +562,7 @@ Result<StoredObject> ObjectCollection::create(std::string_view json, std::uint32
     Result<std::string> revision = newRevision();
     if (!revision) return Result<StoredObject>::failure(revision.error());
     StoredObject record{{id.value(), schema_version, revision.value()}, std::string(json)};
-    Result<Session> session = Session::acquire(this->root_path_, this->name_);
+    Result<Session> session = Session::acquire(this->root_path_, this->name_, this->lock_timeout_, true);
     if (!session) return Result<StoredObject>::failure(session.error());
     Result<bool> stored = storeRecord(session.value().directory(), record, true);
     if (!stored) return Result<StoredObject>::failure(stored.error());
@@ -508,7 +582,7 @@ Result<StoredObject> ObjectCollection::update(const ObjectId &id, std::string_vi
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
     return Result<StoredObject>::failure({ErrorCode::unsupported_platform, "Native storage unavailable"});
 #else
-    Result<Session> session = Session::acquire(this->root_path_, this->name_);
+    Result<Session> session = Session::acquire(this->root_path_, this->name_, this->lock_timeout_, true);
     if (!session) return Result<StoredObject>::failure(session.error());
     Result<StoredObject> previous = loadRecord(session.value().directory(), id);
     if (!previous) return Result<StoredObject>::failure(previous.error());
@@ -532,7 +606,7 @@ Result<bool> ObjectCollection::erase(const ObjectId &id, std::string_view expect
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
     return Result<bool>::failure({ErrorCode::unsupported_platform, "Native storage unavailable"});
 #else
-    Result<Session> session = Session::acquire(this->root_path_, this->name_);
+    Result<Session> session = Session::acquire(this->root_path_, this->name_, this->lock_timeout_, true);
     if (!session) return Result<bool>::failure(session.error());
     Result<StoredObject> previous = loadRecord(session.value().directory(), id);
     if (!previous) return Result<bool>::failure(previous.error());
@@ -542,6 +616,32 @@ Result<bool> ObjectCollection::erase(const ObjectId &id, std::string_view expect
     const std::string filename = id.value() + ".json";
     if (::unlinkat(session.value().directory(), filename.c_str(), 0) < 0) {
         return Result<bool>::failure(operatingError("Delete object", errno));
+    }
+    if (::fsync(session.value().directory()) < 0) {
+        return Result<bool>::failure(operatingError("Sync collection after deletion", errno));
+    }
+    return Result<bool>::success(true);
+#endif
+}
+
+Result<bool> ObjectCollection::eraseCorrupt(const ObjectId &id) const
+{
+#if defined(_WIN32) || defined(__EMSCRIPTEN__)
+    static_cast<void>(id);
+    return Result<bool>::failure({ErrorCode::unsupported_platform, "Native storage unavailable"});
+#else
+    Result<Session> session = Session::acquire(this->root_path_, this->name_, this->lock_timeout_, true);
+    if (!session) return Result<bool>::failure(session.error());
+    // Re-check under the lock: another instance may have repaired or replaced
+    // the record since the caller saw it in an UnreadableObject listing.
+    Result<StoredObject> current = loadRecord(session.value().directory(), id);
+    if (current) {
+        return Result<bool>::failure({ErrorCode::conflict, "Object is readable; erase it with its revision"});
+    }
+    if (current.error().code != ErrorCode::corrupt_object) return Result<bool>::failure(current.error());
+    const std::string filename = id.value() + ".json";
+    if (::unlinkat(session.value().directory(), filename.c_str(), 0) < 0) {
+        return Result<bool>::failure(operatingError("Delete corrupt object", errno));
     }
     if (::fsync(session.value().directory()) < 0) {
         return Result<bool>::failure(operatingError("Sync collection after deletion", errno));

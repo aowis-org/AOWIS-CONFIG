@@ -41,6 +41,10 @@ that have not yet been integrated into consuming applications. See [architecture
 | D27 | WireGuard typed profile records use versioned JSON, with complete escaped `.conf` text in one record | Exact text, metadata and secrets update together; import path is not retained |
 | D28 | WireGuard validation distinguishes blocking structural errors from portability/runtime warnings | Storage preserves original directives; AOWIS-NETWORK must independently validate activation safety |
 | D29 | Profile deletion requires a reference-count callback and rejects missing/failed lookups | Avoids ungated UI deletes; cross-collection reference/create races still require GUI coordination |
+| D30 | Ancestors above the owner directory are trusted and may be symlinks; `O_NOFOLLOW` and privacy checks apply from the owner directory down | Symlinked `/home`, `/var` or `~/.config` layouts work; the private owner directory remains the security boundary |
+| D31 | Listings report damaged entries (`unreadable`) instead of failing; damaged records are removable only while still corrupt | One broken file cannot hide or block the catalogue; newer-schema records are never deleted |
+| D32 | WireGuard validation is strict on write, informational on read; syntax follows wg(8) case-insensitivity and `#` comments | Tightening rules never makes stored profiles unreadable; valid real-world configs are not rejected |
+| D33 | Collection locks are time-limited (`lock_timeout`, default 5 s) | A hung instance or stalled filesystem cannot block a caller indefinitely |
 
 ## Clarifications that matter
 
