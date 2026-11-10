@@ -5,11 +5,13 @@ configuration machinery across AOWIS applications and services. Its purpose is
 to share the *implementation and formats* of configuration management, **not**
 to make independent applications write to one shared configuration directory.
 
-> **Implementation status (2026-11-10):** Phase 2 native POSIX object storage
-> is implemented: UUIDv7 IDs, versioned JSON records, private files,
-> crash-safe single-record replacement, cross-process locks and revisions.
-> **WireGuard import, GUI integration and non-POSIX backends are not yet
-> implemented.** See [storage API](docs/storage-api.md).
+> **Implementation status (2026-11-10):** Phase 3 WireGuard profiles
+> and Phase 2 native POSIX object storage are implemented: UUIDv7 IDs,
+> versioned JSON records, private files, atomic single-record replacement,
+> cross-process locks and revisions.
+> **AOWIS-GUI integration and non-POSIX storage backends are not yet
+> implemented.** See [WireGuard profiles](docs/wireguard-profiles.md) and
+> [storage API](docs/storage-api.md).
 
 ## Read first
 
@@ -25,6 +27,8 @@ to make independent applications write to one shared configuration directory.
   build scripts, CMake submodule and installed-package examples.
 - [Storage API](docs/storage-api.md) — implemented Phase 2 record format,
   CRUD, optimistic locking, security and recovery guarantees.
+- [WireGuard profiles](docs/wireguard-profiles.md) — implemented Phase 3
+  import/edit/delete, validation, secret storage and reference guard.
 
 ## Core rules
 
@@ -63,8 +67,9 @@ to make independent applications write to one shared configuration directory.
 
 Collections and private JSON envelope storage are implemented in Phase 2.
 Each object occupies **one atomic record**, with a component-owned payload.
-WireGuard's eventual profile schema and exact imported-text JSON representation
-remain Phase 3 work. Simple preferences representation is not yet decided.
+WireGuard Phase 3 stores metadata and complete imported `.conf` text
+in a single private JSON record; see [its API](docs/wireguard-profiles.md).
+Simple preferences representation is not yet decided.
 
 These directories are **independently owned**. They are created only as needed.
 System services may be configured with a separate explicit root such as
@@ -76,7 +81,7 @@ Do not confuse configuration with persistent operational data: DVMDB project
 repositories, working copies, caches, and other data have separate roots and
 are **not** migrated simply by copying `~/.config/aowis/`.
 
-## Build and test (Phase 2 implemented on native POSIX)
+## Build and test (Phases 2–3 implemented on native POSIX)
 
 ```bash
 ./compile_linux.sh

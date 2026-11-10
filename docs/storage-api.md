@@ -2,8 +2,10 @@
 
 Status: **implemented on native POSIX (including Linux)**, C++20, dependency-free.
 Windows, Android-specific policy and Emscripten/browser persistence remain later
-platform work. This is **configuration object storage**, not a WireGuard importer,
-GUI integration, preferences implementation or multi-object transaction engine.
+platform work. This is **generic configuration object storage**. The typed WireGuard
+importer is now implemented above it in Phase 3; see
+[wireguard-profiles.md](wireguard-profiles.md). GUI integration, preferences
+and multi-object transactions remain separate work.
 
 ## On-disk contract
 
@@ -43,8 +45,9 @@ their own payloads.
 profile's payload alongside metadata. JSON escaping is lossless and the file
 contains the full imported text and private key. This avoids a partially
 installed `profile.json`/`tunnel.conf` pair. There is no stand-alone `.conf`
-file in the adopted core layout. The importer will define exact metadata and
-encoding; neither encryption nor WireGuard interpretation is provided yet.
+file in the adopted core layout. Phase 3 defines the profile payload and
+lossless JSON string encoding; neither encryption nor network activation is
+provided by this library.
 
 ## C++ API
 
@@ -145,6 +148,6 @@ records and that temporary files are recovered. It is only compiled in native
 **top-level test builds**; it does not exist in ordinary library builds.
 No physical power-cut, Windows backend or Android permission test is claimed.
 
-Future phases must implement application-owned typed schemas, imported WG text
-serialization, reference guards, GUI integration and platform-specific
-backends without weakening these invariants.
+Phase 3 implements WireGuard typed payloads, imported text serialization and
+reference-check hooks. GUI integration and platform-specific backends remain
+future work; the generic storage invariants must not be weakened.

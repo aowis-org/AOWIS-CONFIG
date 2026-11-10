@@ -1,6 +1,6 @@
-# Native library API and consumption (Phases 1–2)
+# Native library API and consumption (Phases 1–3)
 
-Status: **native C++20 foundation and POSIX object storage implemented**.
+Status: **native C++20 foundation, POSIX object storage and WireGuard profile API implemented**.
 
 AOWIS-CONFIG is a C++20 static library that builds standalone without Qt,
 DVMDB, MAP or AOWIS-NETWORK. Public headers are in `include/aowis/config/`.
@@ -19,6 +19,7 @@ runs CTest, failing if any test fails. The Python suite checks patch/snapshot
 tooling separately. CMake 3.20+, C++20 compiler and Ninja are required by
 these scripts. The library itself has no third-party dependencies.
 Native POSIX object storage is described in [storage-api.md](storage-api.md).
+WireGuard import and profile management are described in [wireguard-profiles.md](wireguard-profiles.md).
 
 ## Public symbols
 
@@ -30,7 +31,9 @@ Native POSIX object storage is described in [storage-api.md](storage-api.md).
 | `config_root.h` | `ConfigRoot::fromNamespaceRoot(owner, absolute_path)` | Appends the validated owner to the explicit `aowis` namespace root |
 | `config_root.h` | `ConfigRoot::fromOwnerRoot(owner, absolute_path)` | Uses an explicit absolute owner root for e.g. `/etc/aowis/server-dvmdb` |
 | `config_root.h` | `ConfigRoot::forCurrentUser(owner)` | Resolves native user config root without writing to disk |
-| `version.h` | `version_major/minor/patch` | Current source API version: 0.2.0 |
+| `version.h` | `version_major/minor/patch` | Current source API version: 0.3.0 |
+| `object_store.h` | `ObjectCollection` | Native POSIX atomic JSON object CRUD and revision checks |
+| `wireguard_profiles.h` | `WireGuardProfiles`, validator | Typed, owner-scoped WireGuard profiles and diagnostics; see linked API |
 
 `OwnerId` is a restricted path component: 1–63 ASCII characters, starts with
 `a`–`z`, followed by lowercase ASCII letters/digits, or single interior
@@ -100,14 +103,15 @@ of AOWIS-GUI and Qt.
 
 ## Deliberately not implemented yet
 
-- WireGuard-specific profile schema/import/validation, service reference
-  integrity checks and runtime diagnostics.
+- AOWIS-GUI WireGuard persistence integration, fully transactional service
+  reference coordination, or WireGuard runtime diagnostics.
 - Simple preference storage format, Qt adapters and GUI/server integrations.
 - Windows/Android/browser persistence adapters and cross-object transactions.
 
 **Serialization boundary:** The core validates strict JSON and the versioned
 storage envelope. It does not interpret the application-owned JSON payload;
-component schemas and lossless `.conf` serialization are subsequent work.
+component schemas; lossless WireGuard `.conf` serialization is
+implemented in the optional typed WireGuard layer described above.
 See [storage-api.md](storage-api.md).
 
 API is pre-1.0 and may change during the remaining foundation work. There is

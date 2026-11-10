@@ -1,6 +1,6 @@
 # Implementation roadmap
 
-Status: **Phase 2 native POSIX storage implemented; Phase 3 next**. Updated: 2026-11-10.
+Status: **Phase 3 WireGuard profiles implemented; Phase 4 next**. Updated: 2026-11-10.
 
 This roadmap is written for **AOWIS-CONFIG**. It distinguishes the reusable
 library from integrations into other repositories. Scope and turn counts are
@@ -14,16 +14,16 @@ and documentation have been reviewed and its acceptance conditions met.
 | 0. Repository tooling | **Complete** | `apply_patch.sh`, `zip_config_project.sh`, tooling tests |
 | 1. Library skeleton | **Complete** | C++20 library, CMake, public API baseline, compile scripts, tests |
 | 2. Persistence primitives | **Complete (native POSIX)** | Owner-scoped roots, JSON envelopes, atomic I/O, validation, concurrency/recovery |
-| 3. WireGuard object storage | **Next** | Import, metadata, lossless managed text, CRUD, ID references |
-| 4. GUI WireGuard integration | Not started | Persistent GUI profiles; connection references; runtime diagnostics |
+| 3. WireGuard object storage | **Complete (native POSIX)** | Import, metadata, lossless managed text, CRUD, ID references |
+| 4. GUI WireGuard integration | **Next** | Persistent GUI profiles; connection references; runtime diagnostics |
 | 5. GUI connection / unit / preference consolidation | Not started | Remove JSON/Qt blobs from INI and retire legacy storage |
 | 6. Other owner integrations | Not started | Mobile/server components opt in as needed |
 | 7. Cross-platform hardening | Not started | Native + supported WASM adapters, permissions, portability testing |
 
 The separate AOWIS-GUI repository **already has an experimental WireGuard VPN
-settings UI and syntax highlighter**. That does *not* count as Stage 3 or 4,
-because its profile objects currently have session-only storage and its usage
-and status views are not connected to the final configuration/runtime APIs.
+settings UI and syntax highlighter**. Its current session-only GUI profiles
+are *not* integrated with the completed Phase 3 persistence API. Its usage
+and status views are not connected to actual configuration/runtime APIs.
 
 ## Phase 0 — tooling (done)
 
@@ -80,25 +80,30 @@ publication may have an uncertain outcome and must be followed by re-read.
 
 ## Phase 3 — WireGuard profiles and secret-bearing import
 
-- [ ] Finalize profile payload schema and lossless imported `.conf` text codec.
-- [ ] Import `.conf` text into owner storage; discard original file path.
-- [ ] Preserve original comments/whitespace and private keys exactly; never
-      convert it into a lossy field-by-field serialization.
-- [ ] Validate known file structure and report unsupported directives and
-      nonportable external file/script references without silently removing
-      them.
-- [ ] Implement create/list/edit/rename/delete/read by UUIDv7 ID.
-- [ ] Forbid deletion while referenced (based on consumer-provided catalogue
-      or typed reference resolver); avoid hard-coded DVMDB-only assumptions.
-- [ ] Define export/copy semantics for self-contained owner configurations.
-- [ ] Test a fresh instance re-opening imported and edited profiles; ensure
-      copied owner roots do not depend on the original import location.
-- [ ] Assert private material absent from logs, errors and plaintext metadata;
-      enforce the documented filesystem protection model.
+Implemented on native POSIX using the Phase 2 atomic object store. See
+[wireguard-profiles.md](wireguard-profiles.md) for exact API and validation
+scope, including limitations of cross-collection reference guarding.
 
-**Acceptance:** A managed WireGuard profile survives restart and a copied
-owner root contains the complete stored configuration, without an external
-`.conf` file being required.
+- [x] Define versioned typed profile payload and lossless `.conf` JSON codec.
+- [x] Import text into owner storage; never retain original import path.
+- [x] Preserve original comments, whitespace, CRLF/LF and private keys.
+- [x] Validate structure, warn about unknown/wg-quick/external directives.
+- [x] Implement list/read/create/edit/rename/delete/export by stable UUIDv7.
+- [x] Require a consumer-provided reference count lookup before deletion;
+      reject missing/failed lookups and profiles with configured consumers.
+- [x] Document copy/relocation, protected files, runtime separation and limits.
+- [x] Test reopening edited profiles, copying roots, redacted diagnostics,
+      revision conflicts and reference guards.
+- [ ] Close cross-collection deletion/reference-creation races in the owning
+      GUI catalogue (Phase 4; not solved by a callback alone).
+- [ ] Windows, Android and WASM/platform storage hardening (Phase 7).
+
+**Acceptance:** Native imported profiles survive restart and owner-root copy
+without external source paths. Profiles with references cannot be deleted
+when the authoritative reference callback returns nonzero; an absent or
+failed callback fails closed. Structural validation blocks malformed text;
+portability warnings remain visible but do not rewrite stored configuration.
+No live tunnel status is stored by CONFIG.
 
 ## Phase 4 — AOWIS-GUI integration (separate repository)
 

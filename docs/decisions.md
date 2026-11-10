@@ -1,6 +1,6 @@
 # Architecture decisions and open questions
 
-Status: **architecture decisions; Phase 2 native implementation added**. Updated: 2026-11-10.
+Status: **architecture decisions; Phase 3 WireGuard native storage added**. Updated: 2026-11-10.
 
 This is the authoritative short record of decisions made before implementing
 AOWIS-CONFIG. See [architecture.md](architecture.md) for implications and
@@ -36,6 +36,9 @@ AOWIS-CONFIG. See [architecture.md](architecture.md) for implications and
 | D24 | Native POSIX concurrency: collection `flock` plus expected revision tokens | Cooperating instances serialize I/O and reject stale edits/deletes |
 | D25 | Single-record durability scope, no multi-object transaction guarantee | `fsync` file, atomic publish, `fsync` directory; cross-record transactions require a separate design |
 | D26 | Reject insecure paths, symlinks and file permissions | Private 0700 owner/collection directories and 0600 files; no encryption implied |
+| D27 | WireGuard typed profile records use versioned JSON, with complete escaped `.conf` text in one record | Exact text, metadata and secrets update together; import path is not retained |
+| D28 | WireGuard validation distinguishes blocking structural errors from portability/runtime warnings | Storage preserves original directives; AOWIS-NETWORK must independently validate activation safety |
+| D29 | Profile deletion requires a reference-count callback and rejects missing/failed lookups | Avoids ungated UI deletes; cross-collection reference/create races still require GUI coordination |
 
 ## Clarifications that matter
 
@@ -78,9 +81,9 @@ phase. Resolve them explicitly when that phase begins.
    transaction design must be explicitly added.
 5. **Paths on Windows, Android, and WASM:** platform adapters and browser
    persistence where appropriate, without weakening ownership boundaries.
-6. **WireGuard configuration validation:** exact set of accepted directives,
-   how to surface unsupported `wg-quick` hooks and external script/file
-   dependencies, and whether metadata/secret persistence is one unit.
+6. **WireGuard runtime validation:** Phase 3 stores the text intact and
+   reports structural errors vs runtime-portability warnings; AOWIS-NETWORK
+   must define the actual supported directives and enforcement at activation.
 7. **Protected secret files:** key-rotation/permission/error behavior and
    optional encryption/export are separate decisions; *do not make a keychain
    mandatory* or silently pretend filesystem permissions equal encryption.

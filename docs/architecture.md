@@ -1,6 +1,6 @@
 # Architecture and storage requirements
 
-Status: **Phase 2 native POSIX storage implemented; component integrations pending**. Updated: 2026-11-10.
+Status: **Phase 3 WireGuard native persistence implemented; component integrations pending**. Updated: 2026-11-10.
 
 ## 1. Purpose and responsibility
 
@@ -132,9 +132,11 @@ storage machinery should expose typed lookup and referential-integrity helpers.
 Do not persist derived values like "Used by 3 services" in the WireGuard
 metadata: calculate it from referencing connection records.
 
-Deleting a profile that is still referenced must fail with a useful list of
-referrers. Renaming must not affect references. Concurrent changes and deletion
-races need a defined policy before persistence is considered production-ready.
+Deleting a profile that is still referenced must fail; Phase 3 requires an
+authoritative reference-count callback and fails closed when unavailable.
+Renaming does not affect references. Phase 4 must provide the referrer list
+for the GUI and coordinate cross-collection changes to close reference/delete
+races; a callback alone is not an atomic transaction.
 
 ## 4. WireGuard as the first complete use case
 
@@ -153,9 +155,9 @@ recovery ambiguity between two files. Its payload will contain profile
 metadata and the complete imported `.conf` text in a lossless JSON string,
 including comments, whitespace and private key material. It is **not** a
 path reference to the import source and **not** encryption. The exact
-WireGuard payload schema/codec is **Phase 3**, not implemented by Phase 2.
-See [storage-api.md](storage-api.md) for the implemented envelope, native
-permissions, locks and recovery.
+WireGuard payload schema, import and codec are implemented in **Phase 3**;
+see [wireguard-profiles.md](wireguard-profiles.md). The generic envelope and
+filesystem guarantees are documented in [storage-api.md](storage-api.md).
 
 AOWIS-GUI's existing WireGuard editor is a `QPlainTextEdit` with
 `QSyntaxHighlighter` and a WASM-safe UI approach. Its currently implemented

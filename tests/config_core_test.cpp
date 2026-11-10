@@ -145,7 +145,7 @@ void testResultContract()
         wrong_access_threw = true;
     }
     require(wrong_access_threw, "invalid result access should throw");
-    require(aowis::config::version_major == 0 && aowis::config::version_minor == 2,
+    require(aowis::config::version_major == 0 && aowis::config::version_minor == 3,
             "version header incorrect");
 }
 } // namespace

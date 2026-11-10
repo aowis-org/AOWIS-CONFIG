@@ -11,3 +11,7 @@ add_test(NAME aowis-config-consumer-smoke COMMAND aowis-config-consumer-smoke)
 add_executable(aowis-config-object-store-tests object_store_test.cpp)
 target_link_libraries(aowis-config-object-store-tests PRIVATE aowis::config)
 add_test(NAME aowis-config-object-store COMMAND aowis-config-object-store-tests)
+
+add_executable(aowis-config-wireguard-profiles-tests wireguard_profiles_test.cpp)
+target_link_libraries(aowis-config-wireguard-profiles-tests PRIVATE aowis::config)
+add_test(NAME aowis-config-wireguard-profiles COMMAND aowis-config-wireguard-profiles-tests)

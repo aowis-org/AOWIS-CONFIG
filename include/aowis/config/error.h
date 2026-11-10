@@ -21,6 +21,9 @@ enum class ErrorCode {
     unsafe_path,
     io_failure,
     object_too_large,
+    invalid_wireguard_profile,
+    profile_in_use,
+    reference_unavailable,
 };
 
 struct Error {

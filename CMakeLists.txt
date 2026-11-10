@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(AOWISConfig VERSION 0.2.0 LANGUAGES CXX)
+project(AOWISConfig VERSION 0.3.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -9,6 +9,8 @@ add_library(aowis-config STATIC
     src/config_root.cpp
     src/object_id.cpp
     src/json.cpp
+    src/json_string.cpp
+    src/wireguard_profiles.cpp
     src/object_store.cpp
 )
 add_library(aowis::config ALIAS aowis-config)
