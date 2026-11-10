@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(AOWISConfig VERSION 0.6.0 LANGUAGES CXX)
+project(AOWISConfig VERSION 0.7.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -13,10 +13,13 @@ set(aowis_config_sources
     src/wireguard_profiles.cpp
     src/object_store.cpp
     src/memory_backend.cpp
+    src/key_value_backend.cpp
 )
 # Exactly one persistent backend per platform (contract: src/storage_backend.h).
-# Windows and browser backends replace unsupported_backend.cpp when implemented.
-if(WIN32 OR EMSCRIPTEN)
+# The Windows backend replaces unsupported_backend.cpp when implemented.
+if(EMSCRIPTEN)
+    list(APPEND aowis_config_sources src/browser_backend.cpp)
+elseif(WIN32)
     list(APPEND aowis_config_sources src/unsupported_backend.cpp)
 else()
     list(APPEND aowis_config_sources src/posix_backend.cpp)

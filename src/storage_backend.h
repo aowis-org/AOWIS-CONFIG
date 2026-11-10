@@ -87,8 +87,9 @@ public:
     [[nodiscard]] virtual BackendMode mode() const noexcept = 0;
 };
 
-// The persistent backend of the current platform. Native POSIX today; on
-// Windows and Emscripten this returns unsupported_platform until a backend
+// The persistent backend of the current platform: native POSIX, or the
+// browser backend on Emscripten. On Windows this returns
+// unsupported_platform until a backend
 // meeting the contract above is implemented (selected in CMakeLists.txt).
 [[nodiscard]] Result<std::shared_ptr<const OwnerBackend>> openNativeBackend(
     const std::filesystem::path &owner_root, BackendMode mode, std::chrono::milliseconds lock_timeout);

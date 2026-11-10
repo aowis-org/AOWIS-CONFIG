@@ -16,6 +16,7 @@ namespace aowis::config {
 namespace detail {
 class OwnerBackend;
 class OwnerSessionImpl;
+struct OwnerStoreAccess; // Library-internal: builds stores on internal backends (tests).
 }
 
 // Opaque JSON objects are stored as one complete record each. The record
@@ -109,8 +110,9 @@ public:
     // creates private owner directories if absent; ancestors above the owner
     // directory are trusted and may be symlinks (e.g. /home -> /var/home);
     // nothing at or below the owner directory may be a symlink. read_only:
-    // the owner root must exist (not_found otherwise). Windows/Emscripten:
-    // unsupported_platform until their backends exist.
+    // the owner root must exist (not_found otherwise). Emscripten: the
+    // origin's localStorage; writes only in the tab holding the writer lease
+    // (see docs/api.md). Windows: unsupported_platform until its backend exists.
     [[nodiscard]] static Result<OwnerStore> open(const ConfigRoot &root, OpenOptions options = {});
 
     // Non-persistent store in a MemoryStorage; every platform, same semantics.
@@ -130,6 +132,7 @@ private:
     std::shared_ptr<const detail::OwnerBackend> backend_;
 
     friend class ObjectCollection;
+    friend struct detail::OwnerStoreAccess;
 };
 
 // The record envelope, validation, revisions and listing rules live here and

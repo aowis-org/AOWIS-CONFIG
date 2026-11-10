@@ -1,7 +1,7 @@
 # Operations, security and verification
 
-Status: **v0.6.0, native POSIX backend**. Windows and browser backends do not
-exist yet (`unsupported_platform`). API: [api.md](api.md).
+Status: **v0.7.0**: native POSIX and browser backends; the Windows backend
+does not exist yet (`unsupported_platform`). API: [api.md](api.md).
 
 ## Layout on disk
 
@@ -27,6 +27,23 @@ sudo install -o root -g aowis -m 0640 <record>.json /etc/aowis/server-dvmdb/sett
 
 Group/other-writable entries and symlinks at or below the owner root are
 rejected in every mode.
+
+## Browser storage
+
+Each record is one `localStorage` item of the page's origin:
+`aowis-config:/aowis/<owner>/<collection>/<uuidv7>.json` → the same JSON
+record as on disk. Consequences:
+
+- Clearing the site's data, private-browsing session ends, or browser storage
+  eviction delete the configuration; there is no `fsync`-level guarantee.
+- Every origin (scheme + host + port) has its own store; moving the
+  deployment to another host starts empty.
+- Only one tab per owner writes (Web Locks lease); others read and get
+  `lock_timeout` on writes until the writer tab closes.
+- Readable by any script of the same origin. WireGuard is disabled in
+  browsers, so no private keys are stored there; do not store other secrets
+  there either.
+- Backup/inspection: the browser's developer tools list the items.
 
 ## Security model
 
@@ -90,7 +107,8 @@ ctest --test-dir build-linux-tests --output-on-failure -R '^aowis-config-backend
 | `aowis-config-consumer-smoke` | Public headers/target only; `MemoryStorage` end to end on every platform |
 | `aowis-config-object-store` | POSIX: CRUD, revisions, permissions, symlinked ancestors vs. symlinked owner, damaged entries, `SIGKILL` crash injection before/after publish, cross-process conflicts, owner lock held by another process (all collections blocked, read-only not), read-only mode (`/etc`-style permissions, no lock/creation, writes refused) |
 | `aowis-config-wireguard-profiles` | Text integrity only (no syntax), lifecycle, reference guard, reference count and reassign-then-delete inside one `OwnerSession`, foreign session, unreadable/wrong-type/newer-version records, POSIX permissions, relocation |
-| `aowis-config-backend-contract` | Same suite on every backend (memory, POSIX): CRUD, damaged/foreign/newer entries, 8-thread lost-update race, zero-timeout contention, held session excludes writers but not readers, read-only contract, WireGuard; clean under ThreadSanitizer |
+| `aowis-config-browser-glue` | Node (when installed): the EM_JS bodies of `browser_backend.cpp` against fake `localStorage`/`navigator.locks` — get/put/create-only/remove/keys, quota, unavailable storage, writer lease pending → held, second tab waits and takes over, independent roots, no Web Locks → fail closed |
+| `aowis-config-backend-contract` | Same suite on every backend (memory, browser key-value logic on a fake store, POSIX): CRUD, damaged/foreign/newer entries, 8-thread lost-update race, zero-timeout contention, held session excludes writers but not readers, read-only contract, WireGuard; clean under ThreadSanitizer |
 
 Installed-package check (not a CTest target):
 
@@ -101,8 +119,9 @@ cmake -S tests/installed_consumer -B build-installed-consumer -G Ninja -DCMAKE_P
 cmake --build build-installed-consumer && ./build-installed-consumer/aowis-config-installed-consumer
 ```
 
-**Not proven:** real power-loss durability (only process kills), Windows or
-browser persistence (no backends), GUI integration (Phase 4), encryption at
+**Not proven:** real power-loss durability (only process kills), the browser
+backend inside a real browser and an Emscripten build (no toolchain in the
+development sandbox; first run with Phase 4), Windows persistence (no backend), GUI integration (Phase 4), encryption at
 rest (none), tunnel operation (AOWIS-NETWORK).
 
 When changing the library: add a test for the behavior and an adverse case;

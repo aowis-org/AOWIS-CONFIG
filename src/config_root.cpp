@@ -51,8 +51,9 @@ Result<ConfigRoot> ConfigRoot::fromNamespaceRoot(
 Result<ConfigRoot> ConfigRoot::forCurrentUser(OwnerId owner)
 {
 #if defined(__EMSCRIPTEN__)
-    return Result<ConfigRoot>::failure({ErrorCode::unsupported_platform,
-                                       "Browser storage requires an explicit WebAssembly adapter"});
+    // Browser roots are key namespaces in the origin's localStorage, not
+    // filesystem paths; every owner of the origin lives under "/aowis".
+    return ConfigRoot::fromNamespaceRoot(std::move(owner), std::filesystem::path("/aowis"));
 #elif defined(_WIN32)
     // LOCALAPPDATA, never the roaming APPDATA: owner roots hold private keys,
     // and roaming profiles are synchronized to domain file servers.

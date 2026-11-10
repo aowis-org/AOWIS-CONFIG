@@ -25,6 +25,7 @@ public:
     // on POSIX, and LOCALAPPDATA/aowis/<owner> on Windows (never the roaming
     // APPDATA: roots hold private keys). Never creates directories. Android
     // has no meaningful HOME/XDG: pass an explicit root from QStandardPaths.
+    // Emscripten: /aowis/<owner>, a key namespace in the origin's localStorage.
     [[nodiscard]] static Result<ConfigRoot> forCurrentUser(OwnerId owner);
 
     [[nodiscard]] const OwnerId &owner() const noexcept { return this->owner_; }

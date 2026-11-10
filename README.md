@@ -7,7 +7,7 @@ identities, atomic single-record updates with revision conflicts, one lock per
 owner for multi-step operations, a read-only mode for administrator-managed
 roots, and storage of imported WireGuard profiles.
 
-**Current release:** `0.6.0` (pre-1.0: APIs and on-disk format may change;
+**Current release:** `0.7.0` (pre-1.0: APIs and on-disk format may change;
 there are no productive installations to migrate).
 
 > **Boundaries.** A shared *library* is not a shared *store*: `gui`,
@@ -55,8 +55,9 @@ aowis::config::Result<aowis::config::WireGuardProfiles> profiles =
 | Owner lock + `OwnerSession` for multi-collection operations | Available |
 | Read-only mode for administrator roots (`/etc/aowis/...`) | Available (POSIX) |
 | Native POSIX backend; in-memory backend (`MemoryStorage`) | Available |
+| Browser backend (localStorage, one writer tab via Web Locks) | Available (Emscripten; JS tested under Node, not yet in a browser) |
 | WireGuard profile storage (exact text, name, description, reference guard) | Available |
-| Windows and browser backends | **Not implemented** (`unsupported_platform`) |
+| Windows backend | **Not implemented** (`unsupported_platform`) |
 | AOWIS-GUI integration | **Not yet** (Phase 4) |
 
 ## Repository workflow

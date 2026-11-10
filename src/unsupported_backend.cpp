@@ -1,4 +1,4 @@
-// Placeholder persistent backend for Windows and Emscripten, selected in
+// Placeholder persistent backend for Windows, selected in
 // CMakeLists.txt. A real backend replaces this file per platform and must
 // meet the contract in storage_backend.h. MemoryStorage works everywhere.
 #include "storage_backend.h"

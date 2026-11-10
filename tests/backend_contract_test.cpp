@@ -7,6 +7,9 @@
 #include <aowis/config/object_store.h>
 #include <aowis/config/wireguard_profiles.h>
 
+#include "key_value_backend.h"
+#include "owner_store_access.h"
+
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -14,6 +17,8 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <map>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -309,6 +314,112 @@ void memorySpecifics()
     require(!OwnerStore::openInMemory(storage).value().collection("Bad Name"), "memory: invalid collection accepted");
 }
 
+// Stands in for window.localStorage + navigator.locks, so the browser
+// backend's C++ logic runs through the same contract on every platform.
+class FakeBrowserStorage final : public aowis::config::detail::KeyValueStore {
+public:
+    [[nodiscard]] Result<std::optional<std::string>> get(const std::string &key) const override
+    {
+        const std::lock_guard<std::mutex> guard(this->data_lock_);
+        const std::map<std::string, std::string>::const_iterator found = this->data_.find(key);
+        if (found == this->data_.end()) return Result<std::optional<std::string>>::success(std::nullopt);
+        return Result<std::optional<std::string>>::success(found->second);
+    }
+
+    [[nodiscard]] Result<bool> put(const std::string &key, std::string_view value, bool create_only) override
+    {
+        const std::lock_guard<std::mutex> guard(this->data_lock_);
+        if (create_only && this->data_.count(key) != 0) {
+            return Result<bool>::failure({ErrorCode::conflict, "Object ID already exists"});
+        }
+        if (value.size() > this->quota) {
+            return Result<bool>::failure({ErrorCode::io_failure, "Browser storage quota exceeded"});
+        }
+        this->data_[key] = std::string(value);
+        return Result<bool>::success(true);
+    }
+
+    [[nodiscard]] Result<bool> remove(const std::string &key) override
+    {
+        const std::lock_guard<std::mutex> guard(this->data_lock_);
+        if (this->data_.erase(key) == 0) return Result<bool>::failure({ErrorCode::not_found, "Object does not exist"});
+        return Result<bool>::success(true);
+    }
+
+    [[nodiscard]] Result<std::vector<std::string>> keys(const std::string &prefix) const override
+    {
+        const std::lock_guard<std::mutex> guard(this->data_lock_);
+        std::vector<std::string> found;
+        for (const std::pair<const std::string, std::string> &entry : this->data_) {
+            if (entry.first.compare(0, prefix.size(), prefix) == 0) found.push_back(entry.first);
+        }
+        return Result<std::vector<std::string>>::success(std::move(found));
+    }
+
+    [[nodiscard]] aowis::config::detail::LeaseState lease(const std::string &root) override
+    {
+        static_cast<void>(root);
+        return this->lease_state.load();
+    }
+
+    void plant(const std::string &key, const std::string &bytes)
+    {
+        const std::lock_guard<std::mutex> guard(this->data_lock_);
+        this->data_[key] = bytes;
+    }
+
+    std::atomic<aowis::config::detail::LeaseState> lease_state{aowis::config::detail::LeaseState::held};
+    std::size_t quota = static_cast<std::size_t>(-1);
+
+private:
+    mutable std::mutex data_lock_;
+    std::map<std::string, std::string> data_;
+};
+
+OwnerStore browserStore(const std::shared_ptr<FakeBrowserStorage> &storage, OpenOptions options)
+{
+    const aowis::config::detail::BackendMode mode = options.mode == AccessMode::read_only
+        ? aowis::config::detail::BackendMode::read_only : aowis::config::detail::BackendMode::read_write;
+    return aowis::config::detail::OwnerStoreAccess::make(
+        aowis::config::detail::openKeyValueBackend(storage, "/aowis/gui/", mode, options.lock_timeout));
+}
+
+void browserSpecifics()
+{
+    // Only the lease-holding tab writes; others (and every tab before the
+    // asynchronous grant) can read. Without Web Locks: read-only, fail closed.
+    const std::shared_ptr<FakeBrowserStorage> storage = std::make_shared<FakeBrowserStorage>();
+    const ObjectCollection items = browserStore(storage, OpenOptions{}).collection("items").value();
+    Result<StoredObject> seeded = items.create("{\"n\":1}");
+    require(seeded.hasValue(), "browser: create with lease failed");
+    require(storage->get("aowis-config:/aowis/gui/items/" + seeded.value().info.id.value() + ".json").value().has_value(),
+            "browser: unexpected key layout");
+
+    storage->lease_state = aowis::config::detail::LeaseState::pending;
+    Result<StoredObject> pending = items.create("{\"n\":2}");
+    require(!pending && pending.error().code == ErrorCode::lock_timeout, "browser: write without lease accepted");
+    require(items.read(seeded.value().info.id).hasValue() && items.list().hasValue(),
+            "browser: reads blocked without lease");
+    Result<bool> pending_erase = items.erase(seeded.value().info.id, seeded.value().info.revision);
+    require(!pending_erase && pending_erase.error().code == ErrorCode::lock_timeout, "browser: erase without lease");
+
+    storage->lease_state = aowis::config::detail::LeaseState::unavailable;
+    Result<StoredObject> closed = items.create("{\"n\":3}");
+    require(!closed && closed.error().code == ErrorCode::permission_denied, "browser: fail-open without Web Locks");
+
+    storage->lease_state = aowis::config::detail::LeaseState::held;
+    storage->quota = 16;
+    Result<StoredObject> full = items.create("{\"n\":4}");
+    require(!full && full.error().code == ErrorCode::io_failure, "browser: quota exhaustion not reported");
+    storage->quota = static_cast<std::size_t>(-1);
+
+    // Another owner's keys and nested keys never leak into a collection.
+    storage->plant("aowis-config:/aowis/gui-mobile/items/" + seeded.value().info.id.value() + ".json", "{}");
+    storage->plant("aowis-config:/aowis/gui/items/nested/x.json", "{}");
+    require(items.list().value().objects.size() == 1 && items.list().value().unreadable.empty(),
+            "browser: foreign owner or nested keys listed");
+}
+
 std::vector<Fixture> backends(MemoryStorage &memory, const std::filesystem::path &native_root)
 {
     std::vector<Fixture> fixtures;
@@ -316,6 +427,12 @@ std::vector<Fixture> backends(MemoryStorage &memory, const std::filesystem::path
         [memory](OpenOptions options) { return OwnerStore::openInMemory(memory, options); },
         [memory](const std::string &collection, const std::string &entry, const std::string &bytes) {
             require(memory.writeRawEntry(collection, entry, bytes).hasValue(), "memory: cannot plant entry");
+        }});
+    const std::shared_ptr<FakeBrowserStorage> browser = std::make_shared<FakeBrowserStorage>();
+    fixtures.push_back({"browser-key-value",
+        [browser](OpenOptions options) { return Result<OwnerStore>::success(browserStore(browser, options)); },
+        [browser](const std::string &collection, const std::string &entry, const std::string &bytes) {
+            browser->plant("aowis-config:/aowis/gui/" + collection + "/" + entry, bytes);
         }});
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
     fixtures.push_back({"native-posix",
@@ -351,6 +468,7 @@ int main()
 #endif
         MemoryStorage memory;
         memorySpecifics();
+        browserSpecifics();
         for (const Fixture &fixture : backends(memory, native_root)) runContract(fixture);
         if (!native_root.empty()) std::filesystem::remove_all(native_root.parent_path().parent_path());
         std::cout << "AOWIS-CONFIG backend contract tests passed\n";

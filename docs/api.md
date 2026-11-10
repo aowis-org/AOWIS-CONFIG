@@ -1,6 +1,6 @@
 # API reference and integration
 
-Status: **v0.6.0**, C++20, namespace `aowis::config`, CMake target
+Status: **v0.7.0**, C++20, namespace `aowis::config`, CMake target
 `aowis::config`. Design background: [architecture.md](architecture.md).
 
 All fallible calls return `Result<T>`: `hasValue()` / `explicit operator bool`,
@@ -19,7 +19,7 @@ contain stored payloads, configuration text or keys.
 | `memory_storage.h` | `MemoryStorage` |
 | `wireguard_profiles.h` | `WireGuardProfiles`, inputs, summaries, `WireGuardReferenceCount` |
 | `json.h` | `validateJsonObject()` |
-| `error.h`, `result.h`, `version.h` | `ErrorCode`, `Error`, `Result<T>`, `version_major/minor/patch` (0.6.0) |
+| `error.h`, `result.h`, `version.h` | `ErrorCode`, `Error`, `Result<T>`, `version_major/minor/patch` (0.7.0) |
 
 ## Identities and roots
 
@@ -30,7 +30,7 @@ contain stored payloads, configuration text or keys.
   `ObjectId::generate()` uses the OS random source.
 - `ConfigRoot::forCurrentUser(owner)`: `$XDG_CONFIG_HOME/aowis/<owner>`, else
   `$HOME/.config/aowis/<owner>`; Windows `%LOCALAPPDATA%\aowis\<owner>`;
-  Emscripten `unsupported_platform`. **Android:** no meaningful HOME/XDG —
+  Emscripten `/aowis/<owner>` (a key namespace in the origin's localStorage). **Android:** no meaningful HOME/XDG —
   use `ConfigRoot::fromNamespaceRoot(owner, <QStandardPaths::AppConfigLocation>/aowis)`.
 - `ConfigRoot::fromNamespaceRoot(owner, abs)` appends the owner;
   `fromOwnerRoot(owner, abs)` uses the path as is (e.g. `/etc/aowis/server-dvmdb`).
@@ -174,19 +174,33 @@ never as a production store.
 Private (`src/storage_backend.h`); implemented inside this library only.
 Every backend guarantees:
 
-| # | Guarantee | POSIX | Memory |
-| --- | --- | --- | --- |
-| 1 | Exclusive read-write owner sessions across threads/processes; bounded wait → `lock_timeout` | `flock` on `<owner>/.lock`, polled | `std::mutex`, polled |
-| 2 | Atomic single-entry replacement; `create_only` never replaces (`conflict`) | fsynced temp + `linkat`/`renameat` | map assignment under lock |
-| 3 | Success only once durable under the backend's failure model | file + directory `fsync` | lifetime of the last handle |
-| 4 | Enumerate every `*.json` entry incl. foreign names; hide bookkeeping | `readdir`, skips `.lock`/`.tmp-*` | map keys |
-| 5 | Per-entry errors without stored bytes | symlink/permission/size checks | size check |
-| 6 | Bound to one owner root; names validated before reaching the backend | descriptor walk | one `MemoryStorage` |
-| 7 | `collection(name, recover)` removes own crash residue | `.tmp-<uuidv7>` cleanup | none |
-| 8 | Read-only mode: no creation/lock/recovery/writes; missing collection = empty | relaxed ownership, never writability | same |
+| # | Guarantee | POSIX | Memory | Browser |
+| --- | --- | --- | --- | --- |
+| 1 | Exclusive read-write owner sessions across threads/processes; bounded wait → `lock_timeout` | `flock` on `<owner>/.lock`, polled | `std::mutex`, polled | per-root mutex in the tab; across tabs only the Web Locks lease holder writes |
+| 2 | Atomic single-entry replacement; `create_only` never replaces (`conflict`) | fsynced temp + `linkat`/`renameat` | map assignment under lock | one `setItem` per record |
+| 3 | Success only once durable under the backend's failure model | file + directory `fsync` | lifetime of the last handle | browser's localStorage persistence |
+| 4 | Enumerate every `*.json` entry incl. foreign names; hide bookkeeping | `readdir`, skips `.lock`/`.tmp-*` | map keys | keys under `aowis-config:<root>/<collection>/` |
+| 5 | Per-entry errors without stored bytes | symlink/permission/size checks | size check | size check |
+| 6 | Bound to one owner root; names validated before reaching the backend | descriptor walk | one `MemoryStorage` | key prefix |
+| 7 | `collection(name, recover)` removes own crash residue | `.tmp-<uuidv7>` cleanup | none | none |
+| 8 | Read-only mode: no creation/lock/recovery/writes; missing collection = empty | relaxed ownership, never writability | same | no lease, no writes |
+
+### Browser specifics
+
+- Writes need the tab's writer lease. It is requested when the first
+  read-write `OwnerStore` of a root opens and granted asynchronously, i.e.
+  after the next event-loop turn; until then, and in every other tab, writes
+  return `lock_timeout` and reads work. The lease stays with the tab until it
+  closes; a waiting tab takes over automatically. Without the Web Locks API
+  (non-secure context) writes return `permission_denied`.
+- Threaded builds proxy every localStorage/lock access to the browser main
+  thread synchronously; do not hold an `OwnerSession` on the main thread
+  while a worker needs the same store.
+- Quota exhaustion returns `io_failure` ("Browser storage quota exceeded").
 
 `tests/backend_contract_test.cpp` runs one behavioral suite against every
-backend of the build platform; a new backend is added to `backends()` there
+backend of the build platform (including the browser backend's C++ logic on
+a fake key-value store); a new backend is added to `backends()` there
 and must pass unchanged. Adding a backend: implement `openNativeBackend()` in
 `src/<platform>_backend.cpp`, select it in `CMakeLists.txt` instead of
 `unsupported_backend.cpp`, add it to the contract test, document its failure
