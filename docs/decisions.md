@@ -30,6 +30,8 @@ AOWIS-CONFIG. See [architecture.md](architecture.md) for implications and
 | D18 | System services are not forced into desktop-user configuration directories | Allow explicit system-managed roots such as `/etc/aowis/server-dvmdb/` |
 | D19 | Separate configured connection identity from remote repository/service identity | Two connection definitions may point to the same repository through different endpoints/transports |
 | D20 | Include schema version in structured objects | Validate and reject unsupported versions; this is not a commitment to maintain legacy readers |
+| D21 | Phase 1 API uses `aowis::config`, CMake target `aowis::config`, and owner-scoped `ConfigRoot` | Native C++20 without Qt; explicit roots for system services, no implicit shared mutable directory |
+| D22 | Phase 1 avoids a mandatory JSON dependency | Application-owned schemas/serializers; Phase 2 must define and test JSON validation and persistence encoding |
 
 ## Clarifications that matter
 
@@ -63,8 +65,9 @@ phase. Resolve them explicitly when that phase begins.
    core versus continuing small native INI/QSettings preferences behind a
    generic adapter. Structured profiles are JSON regardless; the diagram's
    `preferences.json` is an *example*, not a ratified final format.
-2. **Exact API/ABI:** namespace, CMake target names, class names, error types,
-   synchronous versus asynchronous facade, and notification mechanism.
+2. **API after Phase 1:** initial namespace, CMake target, owner/root/error/result
+   types are now implemented (pre-1.0). Persistence operations, synchronous
+   versus asynchronous façade, and change notifications remain undecided.
 3. **Concurrency policy:** how conflicting writes by two instances of *the
    same application* are detected/retried; lock scope and revision/version
    semantics.

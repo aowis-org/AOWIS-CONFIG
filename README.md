@@ -1,15 +1,14 @@
 # AOWIS-CONFIG
 
-**AOWIS-CONFIG** is the planned, independent C++20 library for persistent
+**AOWIS-CONFIG** is an independent C++20 library for persistent
 configuration machinery across AOWIS applications and services. Its purpose is
 to share the *implementation and formats* of configuration management, **not**
 to make independent applications write to one shared configuration directory.
 
-> **Implementation status (2026-11-10):** This repository contains the patch,
-> snapshot, and tooling regression-test infrastructure only. The configuration
-> library, CMake project, storage backends, object schemas, and AOWIS integrations
-> described below **have not been implemented**. This distinction is essential
-> when picking up work in a later development session.
+> **Implementation status (2026-11-10):** Phase 1 foundation is implemented:
+> CMake library, public owner/root/error/result API, Linux build scripts,
+> independent consumer smoke and tests. **There is no persistent storage engine,
+> WireGuard import, or GUI integration yet.** See [library API](docs/library-api.md).
 
 ## Read first
 
@@ -21,6 +20,8 @@ to make independent applications write to one shared configuration directory.
   criteria, and explicit removal of legacy storage.
 - [Development handoff](docs/handoff.md) — current state and precise next steps
   for continuing in a new thread or checkout.
+- [Library API / consumption](docs/library-api.md) — implemented Phase 1 interface,
+  build scripts, CMake submodule and installed-package examples.
 
 ## Core rules
 
@@ -70,6 +71,19 @@ Do not confuse configuration with persistent operational data: DVMDB project
 repositories, working copies, caches, and other data have separate roots and
 are **not** migrated simply by copying `~/.config/aowis/`.
 
+## Build and test (Phase 1 implemented)
+
+```bash
+./compile_linux.sh
+./compile_linux_tests.sh
+python3 tests/repository_tooling_test.py
+```
+
+CMake 3.20+, Ninja and a C++20 compiler are required for the scripts; Python
+3, Bash and ZIP utilities are used for repository tooling. The public CMake
+target is `aowis::config` (`add_subdirectory` or installed `AOWISConfig`
+package). See [library API](docs/library-api.md).
+
 ## Repository tooling (implemented)
 
 ### Apply source patches
@@ -105,13 +119,12 @@ temporary files are excluded. The old snapshot is retained if creation fails.
 python3 tests/repository_tooling_test.py
 ```
 
-The bootstrap tooling was previously verified with nine tests in a disposable
-checkout. This is **not** a configuration-library test suite; no library code
-exists yet. Tooling requires Bash, Python 3, `zip`, and `unzip`.
+The repository tooling has nine standalone regression tests; the C++ library
+has its own CTest suite. Tooling requires Bash, Python 3, `zip`, and `unzip`.
 
 ## Source policy
 
-Planned license: Apache-2.0 (see `LICENSE`). C++ core: C++20 with no mandatory
+License: Apache-2.0 (see `LICENSE`). C++ core: C++20 with no mandatory
 Qt, DVMDB, or AOWIS-NETWORK dependencies. Follow the AOWIS source conventions:
 do not introduce `auto` for C++ local declarations, and use `this->` when
 accessing class members.

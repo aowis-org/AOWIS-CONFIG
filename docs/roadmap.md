@@ -1,6 +1,6 @@
 # Implementation roadmap
 
-Status: **planned**. Updated: 2026-11-10.
+Status: **Phase 1 implemented; Phase 2 next**. Updated: 2026-11-10.
 
 This roadmap is written for **AOWIS-CONFIG**. It distinguishes the reusable
 library from integrations into other repositories. Scope and turn counts are
@@ -12,8 +12,8 @@ and documentation have been reviewed and its acceptance conditions met.
 | Stage | Status | Deliverable |
 | --- | --- | --- |
 | 0. Repository tooling | **Complete** | `apply_patch.sh`, `zip_config_project.sh`, tooling tests |
-| 1. Library skeleton | Not started | C++20 library, CMake, public API baseline, compile scripts, tests |
-| 2. Persistence primitives | Not started | Owner-scoped roots, JSON, atomic I/O, validation, concurrency/recovery |
+| 1. Library skeleton | **Complete** | C++20 library, CMake, public API baseline, compile scripts, tests |
+| 2. Persistence primitives | **Next** | Owner-scoped roots, JSON, atomic I/O, validation, concurrency/recovery |
 | 3. WireGuard object storage | Not started | Import, metadata, secure managed text, CRUD, ID references |
 | 4. GUI WireGuard integration | Not started | Persistent GUI profiles; connection references; runtime diagnostics |
 | 5. GUI connection / unit / preference consolidation | Not started | Remove JSON/Qt blobs from INI and retire legacy storage |
@@ -35,22 +35,29 @@ and status views are not connected to the final configuration/runtime APIs.
 
 ## Phase 1 — independent C++20 foundation
 
-- [ ] Establish CMake project, reusable build target, test target, install and
+- [x] Establish CMake project, reusable build target, test target, install and
       submodule consumption model; Apache-2.0 license already present.
-- [ ] Add `compile_linux.sh` and `compile_linux_tests.sh` with clear, minimal
+- [x] Add `compile_linux.sh` and `compile_linux_tests.sh` with clear, minimal
       dependencies and deterministic exits on test failure.
-- [ ] Define root namespace, explicit config-owner identifier, error model,
+- [x] Define root namespace, explicit config-owner identifier, error model,
       result types, and minimal public headers.
-- [ ] Decide whether core includes JSON serialization via a small dependency
+- [x] Decide whether core includes JSON serialization via a small dependency
       or uses caller-provided serializers; avoid Qt in public/core interfaces.
-- [ ] Add smoke integration for a second standalone consumer, without forcing
+- [x] Add smoke integration for a second standalone consumer, without forcing
       coupling to GUI, DVMDB, or AOWIS-NETWORK.
-- [ ] Document CMake targets and examples.
+- [x] Document CMake targets and examples.
 
-**Acceptance:** Reproducible native build and tests without Qt/DVMDB; consumer
-can link the library; no external network services required for tests.
+**Acceptance verified in the patch build:** Native library and 2 CTests pass
+without Qt/DVMDB; independent link consumer passes. Installed-package CMake
+export is exercised separately. No external services are required. See
+[library-api.md](library-api.md).
 
 ## Phase 2 — storage engine and object collections
+
+Phase 1 supplies **path resolution only**, not secure directory access. Before
+storing credentials, the next phase must establish a safe file-opening/locking
+and recovery design. Code that merely returns a `ConfigRoot` is not a secure
+filesystem backend.
 
 - [ ] Resolve the owner-scoped native config root from platform conventions or
       an explicit override; enforce valid owner IDs and path containment.

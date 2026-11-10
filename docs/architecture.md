@@ -1,6 +1,6 @@
 # Architecture and storage requirements
 
-Status: **target design, not implemented**. Updated: 2026-11-10.
+Status: **target design; Phase 1 owner/root foundations implemented, persistence not implemented**. Updated: 2026-11-10.
 
 ## 1. Purpose and responsibility
 
