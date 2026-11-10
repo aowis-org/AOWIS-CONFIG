@@ -1,60 +1,117 @@
 # AOWIS-CONFIG
 
-Shared C++ configuration infrastructure for AOWIS components (planned). The
-repository currently provides only the source patch and source snapshot tools.
+**AOWIS-CONFIG** is the planned, independent C++20 library for persistent
+configuration machinery across AOWIS applications and services. Its purpose is
+to share the *implementation and formats* of configuration management, **not**
+to make independent applications write to one shared configuration directory.
 
-## Initial tooling bootstrap (once only)
+> **Implementation status (2026-11-10):** This repository contains the patch,
+> snapshot, and tooling regression-test infrastructure only. The configuration
+> library, CMake project, storage backends, object schemas, and AOWIS integrations
+> described below **have not been implemented**. This distinction is essential
+> when picking up work in a later development session.
 
-This repository initially has no `apply_patch.sh`. Install the first tooling
-patch directly from the parent directory:
+## Read first
+
+- [Architecture and requirements](docs/architecture.md) — ownership, paths,
+  persistence, WireGuard, security, portability, and API boundaries.
+- [Decisions and open questions](docs/decisions.md) — what was agreed and what
+  remains a design choice.
+- [Implementation roadmap](docs/roadmap.md) — staged work, tests, acceptance
+  criteria, and explicit removal of legacy storage.
+- [Development handoff](docs/handoff.md) — current state and precise next steps
+  for continuing in a new thread or checkout.
+
+## Core rules
+
+1. One reusable C++20 configuration **library**; separate physical stores owned
+   by `gui`, `gui-mobile`, `server-map`, `server-dvmdb`, etc.
+2. No universal writable `shared/` configuration directory. Components may use
+   common schemas without silently sharing mutable objects.
+3. Persist reusable configuration objects by stable IDs, not paths to files
+   outside the AOWIS-owned configuration root.
+4. Import WireGuard `.conf` files into the **owning application's** storage,
+   preserving their text, including secret keys. A copied configuration tree
+   should contain everything AOWIS needs from that imported profile.
+5. Treat credentials as secrets, preserve restrictive permissions, and never
+   log them. No external keychain dependency is required for profile portability.
+6. AOWIS-CONFIG owns persistence, not network sessions. AOWIS-NETWORK owns
+   tunnel lifecycle, handshake/traffic status, and network transport behavior.
+7. Use deliberate breaking changes now: there are **no productive installations**
+   requiring migration from existing experimental settings formats. Replace
+   obsolete storage paths and remove dead compatibility implementations.
+8. Library consumers must opt in because they own persistent configuration.
+   Pure rendering, model, and compute libraries should receive typed values
+   rather than reading configuration files by themselves.
+
+## Intended native layout (illustrative)
+
+```text
+~/.config/aowis/
+├── gui/
+│   ├── preferences.json             # final preference format to be decided
+│   ├── connections/<uuid>.json
+│   ├── unit-profiles/<uuid>.json
+│   └── wireguard/<uuid>/
+│       ├── profile.json
+│       └── tunnel.conf
+├── gui-mobile/
+├── server-map/
+└── server-dvmdb/
+```
+
+These directories are **independently owned**. They are created only as needed.
+System services may be configured with a separate explicit root such as
+`/etc/aowis/server-dvmdb/`; a GUI user's home directory is not a systemd
+service's configuration location. OS-specific roots are resolved by a storage
+adapter, not hard-coded into feature widgets.
+
+Do not confuse configuration with persistent operational data: DVMDB project
+repositories, working copies, caches, and other data have separate roots and
+are **not** migrated simply by copying `~/.config/aowis/`.
+
+## Repository tooling (implemented)
+
+### Apply source patches
 
 ```bash
 cd ~/coding/aowis/AOWIS-CONFIG
-unzip -o ~/Downloads/aowis-config-tooling-bootstrap.zip -d ..
+./tools/apply_patch.sh ~/Downloads/aowis-config-description.zip
+```
+
+Patches must have a filename `aowis-config-*.zip` and all members must live
+under the `AOWIS-CONFIG/` archive prefix. Replacements and additions are
+supported. Optional deletion manifest:
+`AOWIS-CONFIG/.aowis-patch-delete.txt` (one project-relative file path per
+line). The script validates entries, rejects unsafe paths and symlinks, updates
+file timestamps, and refreshes `../config.zip` after applying changes. File
+replacement is atomic **per file**, not across an entire patch. It does not
+stage or commit Git changes.
+
+### Create or refresh the source snapshot
+
+```bash
+cd ~/coding/aowis/AOWIS-CONFIG
 ./tools/zip_config_project.sh
 ```
 
-All subsequent patches use `./tools/apply_patch.sh`.
+This creates `~/coding/aowis/config.zip` from the repository source, with an
+`AOWIS-CONFIG/` top-level entry. Git metadata, build outputs, caches, and
+temporary files are excluded. The old snapshot is retained if creation fails.
 
-## Snapshot this repository
-
-```bash
-cd ~/coding/aowis/AOWIS-CONFIG
-./tools/zip_config_project.sh
-```
-
-This writes `../config.zip` (normally `~/coding/aowis/config.zip`). It contains
-an `AOWIS-CONFIG/` root and source files, but excludes Git internals, build
-outputs, caches, editor files, temporary files, and the patch deletion manifest.
-A new snapshot replaces the previous one **only after** ZIP creation succeeds.
-
-## Apply a source patch
-
-```bash
-cd ~/coding/aowis/AOWIS-CONFIG
-./tools/apply_patch.sh ~/Downloads/aowis-config-example.zip
-```
-
-Patches must be named `aowis-config-*.zip` and contain entries under the
-`AOWIS-CONFIG/` root. The script checks the entire ZIP before modifying the
-working tree, rejects unsafe paths/symlinks, stages replacements and updates
-file timestamps so incremental builds notice them. It then refreshes
-`../config.zip` automatically. Patches can add or replace files.
-
-To delete files, a patch may include `AOWIS-CONFIG/.aowis-patch-delete.txt`
-with one relative file path per line. Deletions are validated and the manifest
-itself is not installed. Do not use the manifest for directories.
-
-File replacements are atomic individually; the entire multi-file patch is **not**
-transactional. A failed snapshot refresh does not roll back applied changes.
-The patch script intentionally does not run `git add` or `git commit`.
-
-## Verify the repository tools
+### Run tooling tests
 
 ```bash
 python3 tests/repository_tooling_test.py
 ```
 
-This runs the scripts in disposable checkouts and tests ZIP contents,
-replacement, deletion, unsafe archive rejection, and snapshot refresh.
-Requires Bash, Python 3, `zip`, and `unzip` for inspection.
+The bootstrap tooling was previously verified with nine tests in a disposable
+checkout. This is **not** a configuration-library test suite; no library code
+exists yet. Tooling requires Bash, Python 3, `zip`, and `unzip`.
+
+## Source policy
+
+Planned license: Apache-2.0 (see `LICENSE`). C++ core: C++20 with no mandatory
+Qt, DVMDB, or AOWIS-NETWORK dependencies. Follow the AOWIS source conventions:
+do not introduce `auto` for C++ local declarations, and use `this->` when
+accessing class members.
