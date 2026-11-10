@@ -1,7 +1,7 @@
 # Integration guide — an AOWIS component as configuration owner
 
 **Target audience:** developers integrating AOWIS-CONFIG into AOWIS-GUI or a
-standalone AOWIS service. **Implemented library API:** v0.4.0 on native POSIX.
+standalone AOWIS service. **Implemented library API:** v0.5.0 on native POSIX.
 **Planned GUI wiring:** Phase 4; the steps below are an integration contract,
 not a claim that GUI code has already been changed.
 
@@ -150,6 +150,12 @@ collection and nothing changed.
 `ConfigRoot::forCurrentUser()` relies on `XDG_CONFIG_HOME`/`HOME`, which
 Android does not provide meaningfully. AOWIS-GUI-Mobile must pass an explicit
 root, e.g. `ConfigRoot::fromNamespaceRoot(owner, <QStandardPaths::AppConfigLocation>/aowis)`.
+
+For unit tests of GUI code (settings widgets, reference catalogue), use
+`MemoryStorage` + `ObjectCollection::openInMemory()` +
+`WireGuardProfiles::fromCollection()`: same semantics, no filesystem, works
+in every build including WASM. `MemoryStorage::writeRawEntry()` plants
+damaged records to test the unreadable-row UI.
 
 ## 8. Platform and integration checklist
 

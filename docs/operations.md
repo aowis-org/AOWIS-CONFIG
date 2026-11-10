@@ -1,6 +1,6 @@
 # Operations, portability and secret safety
 
-This document describes the **native POSIX implementation in v0.4.0**. It is
+This document describes the **native POSIX implementation in v0.5.0**. It is
 not a deployment guide for unfinished Windows/WASM storage backends.
 
 ## What is stored where?

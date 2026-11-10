@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(AOWISConfig VERSION 0.4.0 LANGUAGES CXX)
+project(AOWISConfig VERSION 0.5.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-add_library(aowis-config STATIC
+set(aowis_config_sources
     src/owner_id.cpp
     src/config_root.cpp
     src/object_id.cpp
@@ -12,13 +12,28 @@ add_library(aowis-config STATIC
     src/json_string.cpp
     src/wireguard_profiles.cpp
     src/object_store.cpp
+    src/memory_backend.cpp
 )
+# Exactly one persistent backend per platform (contract: src/storage_backend.h).
+# Windows and browser backends replace unsupported_backend.cpp when implemented.
+if(WIN32 OR EMSCRIPTEN)
+    list(APPEND aowis_config_sources src/unsupported_backend.cpp)
+else()
+    list(APPEND aowis_config_sources src/posix_backend.cpp)
+endif()
+add_library(aowis-config STATIC ${aowis_config_sources})
 add_library(aowis::config ALIAS aowis-config)
 set_target_properties(aowis-config PROPERTIES
     EXPORT_NAME config
     POSITION_INDEPENDENT_CODE ON
 )
 target_compile_features(aowis-config PUBLIC cxx_std_20)
+# MemoryStorage uses std::timed_mutex. Emscripten is left untouched so a
+# single-threaded browser build is never switched to -pthread.
+if(NOT EMSCRIPTEN)
+    find_package(Threads REQUIRED)
+    target_link_libraries(aowis-config PUBLIC Threads::Threads)
+endif()
 target_include_directories(aowis-config PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>

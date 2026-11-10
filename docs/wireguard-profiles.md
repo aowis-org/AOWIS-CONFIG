@@ -1,6 +1,6 @@
 # Phase 3 — WireGuard profiles
 
-Status: **implemented in AOWIS-CONFIG v0.4.0 for the native POSIX object backend**. See [Consumer integration](integration-guide.md) and [Operations](operations.md) for application responsibilities and sensitive-file handling.
+Status: **implemented in AOWIS-CONFIG v0.5.0 for the native POSIX object backend**. See [Consumer integration](integration-guide.md) and [Operations](operations.md) for application responsibilities and sensitive-file handling.
 The GUI binding and AOWIS-NETWORK runtime integration belong to Phase 4.
 
 ## Storage and profile format
@@ -69,6 +69,7 @@ aowis::config::Result<aowis::config::WireGuardProfile> created =
 | --- | --- |
 | `validateWireGuardConfiguration(text)` | Returns line-numbered errors and warnings with no input values in diagnostic messages |
 | `WireGuardProfiles::open(root, lock_timeout=5s)` | Opens private `wireguard` object collection for this owner |
+| `WireGuardProfiles::fromCollection(collection)` | Wraps an opened collection named `wireguard`, e.g. `openInMemory()` for unit tests; other names → `invalid_collection` |
 | `importText(input)` | Validates and atomically creates a new UUIDv7 profile; does not take/keep source path |
 | `list()` | `WireGuardProfileListing`: IDs, revisions, names, descriptions (**no private configuration text**) plus `unreadable` records; one locked pass |
 | `read(id)` | Returns metadata, exact text, current revision and `validation` against the current rules |

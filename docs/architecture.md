@@ -238,9 +238,10 @@ status interface.
 
 ```text
 AOWIS applications/services (own their domain schemas and references)
-  ├── AOWIS-CONFIG 0.4.0 (native C++20 library, aowis::config)
+  ├── AOWIS-CONFIG 0.5.0 (native C++20 library, aowis::config)
   │     ├── OwnerId + ConfigRoot (owner-scoped path resolution)
-  │     ├── ObjectCollection (JSON records, UUIDv7, revisions, POSIX I/O)
+  │     ├── ObjectCollection (JSON records, UUIDv7, revisions; backend-independent)
+  │     │     └── storage backends: native POSIX | in-memory | Windows/browser (pending)
   │     ├── WireGuardProfiles (text import/CRUD/validation, reference hook)
   │     └── Result<T> / ErrorCode (checked failure handling)
   ├── Future consumer-specific preferences, connections and unit schemas
@@ -257,7 +258,9 @@ and browser storage are **not** implemented. Do not implement or assume a
 hypothetical `resolveReferences` API: the deletion reference-count callback
 is supplied by the consuming application's catalogue.
 
-Platform adapters may be introduced later without imposing Qt on server
+Persistent platform backends plug in behind a private backend contract (see
+[storage-backends.md](storage-backends.md)); the record format and all
+semantics stay in `ObjectCollection`. Platform adapters may be introduced later without imposing Qt on server
 components. The GUI consumes the library; it does not own its storage logic.
 
 ## 7. Existing experimental GUI storage to replace

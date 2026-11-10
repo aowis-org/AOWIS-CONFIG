@@ -7,7 +7,7 @@ targets are already implemented.**
 ## What the project is
 
 - Repository: **AOWIS-CONFIG**, an independent Apache-2.0 C++20 library
-  **implementing** native persistent-configuration machinery (v0.4.0).
+  **implementing** native persistent-configuration machinery (v0.5.0).
 - Component ownership: each application/service has its own storage root
   within `aowis/<owner>`; there is **no universal mutable `shared/` root**.
 - Code reuse: include/configure it as a pinned submodule only in components
@@ -38,11 +38,15 @@ strict JSON syntax validation and tests. Public API is in
 
 **Phase 3 complete for native POSIX:** `WireGuardProfiles`, typed payload
 codec, import/list/read/edit/rename/delete/export, text validation and
-portability warnings, reference lookup guards and tests. **v0.4.0
+portability warnings, reference lookup guards and tests. **v0.5.0
 hardening (pre-Phase 4 review):** wg(8)-compatible case-insensitive parsing,
 no false key-path warnings, lenient reads with `WireGuardProfile::validation`,
 single-pass `list()` returning unreadable records, `eraseUnreadable()`, and
-`lock_timeout`. See
+`lock_timeout`. **v0.5.0:** private storage backend contract
+(`src/storage_backend.h`), POSIX code moved unchanged into
+`posix_backend.cpp`, public `MemoryStorage` + `openInMemory()` +
+`WireGuardProfiles::fromCollection()`, cross-backend contract tests. See
+[storage-backends.md](storage-backends.md). See
 [wireguard-profiles.md](wireguard-profiles.md). **There is no AOWIS-GUI
 persistence binding yet.** Other storage backends and true power-loss tests
 remain Phase 7.

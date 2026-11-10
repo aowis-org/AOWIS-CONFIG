@@ -15,3 +15,9 @@ add_test(NAME aowis-config-object-store COMMAND aowis-config-object-store-tests)
 add_executable(aowis-config-wireguard-profiles-tests wireguard_profiles_test.cpp)
 target_link_libraries(aowis-config-wireguard-profiles-tests PRIVATE aowis::config)
 add_test(NAME aowis-config-wireguard-profiles COMMAND aowis-config-wireguard-profiles-tests)
+
+# Same behavioral contract for every backend available on this platform
+# (always in-memory; native POSIX where implemented).
+add_executable(aowis-config-backend-contract-tests backend_contract_test.cpp)
+target_link_libraries(aowis-config-backend-contract-tests PRIVATE aowis::config)
+add_test(NAME aowis-config-backend-contract COMMAND aowis-config-backend-contract-tests)

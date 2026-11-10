@@ -1,6 +1,6 @@
 # Verification and test matrix
 
-This page describes **the tests present in AOWIS-CONFIG v0.4.0**, not tests
+This page describes **the tests present in AOWIS-CONFIG v0.5.0**, not tests
 that have necessarily run on every downstream AOWIS component. To verify a
 new checkout, run:
 
@@ -25,13 +25,14 @@ ctest --test-dir build-linux-tests --output-on-failure \
 | `aowis-config-core` | `tests/config_core_test.cpp` | Owner IDs, roots, Result, version and core API |
 | `aowis-config-consumer-smoke` | `tests/consumer/main.cpp` | Public-header and target linkage, no private includes |
 | `aowis-config-object-store` | `tests/object_store_test.cpp` | JSON, UUIDv7, CRUD, revisions, filesystem protections, symlinked ancestors vs. symlinked owner root, unreadable-entry listing and `eraseCorrupt`, conflicts, crash injections, lock timeout against a lock-holding process |
+| `aowis-config-backend-contract` | `tests/backend_contract_test.cpp` | One behavioral contract run against every backend on the platform (memory always, native POSIX where available): CRUD/revisions, damaged/foreign/newer-schema entries, 8-thread lost-update race, zero-timeout contention, WireGuard end to end; `MemoryStorage` handle semantics. Verified clean under ThreadSanitizer |
 | `aowis-config-wireguard-profiles` | `tests/wireguard_profiles_test.cpp` | Import, exact text, metadata, validation (case-insensitive syntax, inline comments, base64 keys starting with `/`), list/read/export, lenient read of profiles failing current rules, unreadable records and `eraseUnreadable`, deletion guards, relocation |
 
 Outside CTest, `tests/repository_tooling_test.py` exercises the ZIP/source
 snapshot and `apply_patch.sh` workflow (9 tooling checks at the Phase 3
 checkpoint). The installed-package consumer under
 `tests/installed_consumer/` is a **separate install/consume exercise**, not a
-fifth standard CTest target.
+sixth standard CTest target.
 
 ## Verify installation as a consumer
 

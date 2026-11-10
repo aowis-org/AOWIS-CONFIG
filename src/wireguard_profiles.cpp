@@ -315,6 +315,15 @@ Result<WireGuardProfiles> WireGuardProfiles::open(const ConfigRoot &root,
     return Result<WireGuardProfiles>::success(WireGuardProfiles(std::move(collection.value())));
 }
 
+Result<WireGuardProfiles> WireGuardProfiles::fromCollection(ObjectCollection collection)
+{
+    if (collection.name() != "wireguard") {
+        return Result<WireGuardProfiles>::failure({ErrorCode::invalid_collection,
+                                                   "WireGuard profiles require the \"wireguard\" collection"});
+    }
+    return Result<WireGuardProfiles>::success(WireGuardProfiles(std::move(collection)));
+}
+
 Result<WireGuardProfile> WireGuardProfiles::read(const ObjectId &id) const
 {
     Result<StoredObject> stored = this->collection_.read(id);

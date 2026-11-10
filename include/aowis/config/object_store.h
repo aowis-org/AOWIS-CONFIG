@@ -1,16 +1,22 @@
 #pragma once
 
 #include "aowis/config/config_root.h"
+#include "aowis/config/memory_storage.h"
 #include "aowis/config/object_id.h"
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace aowis::config {
+
+namespace detail {
+class CollectionBackend;
+}
 
 // Opaque JSON objects are stored as one complete, versioned, mode-0600 file.
 // A later secret-bearing schema can keep metadata and its secret content in
@@ -50,14 +56,24 @@ struct ObjectSnapshot {
 // a long timeout; a zero timeout performs exactly one non-blocking attempt.
 inline constexpr std::chrono::milliseconds default_lock_timeout{5000};
 
+// The record envelope, validation, revisions and listing rules live here and
+// are identical for every storage backend; backends only store bytes.
 class ObjectCollection final {
 public:
-    // Creates private owner/collection directories if absent. Ancestors above
-    // the owner directory are trusted and may be symlinks (e.g. /home ->
+    // Persistent storage of the current platform. Native POSIX: creates
+    // private owner/collection directories if absent. Ancestors above the
+    // owner directory are trusted and may be symlinks (e.g. /home ->
     // /var/home); the owner directory, collection directory and records must
-    // not be symlinks and must be private to the effective user.
+    // not be symlinks and must be private to the effective user. Windows and
+    // Emscripten: unsupported_platform until their backends exist.
     [[nodiscard]] static Result<ObjectCollection> open(
         const ConfigRoot &root, std::string_view collection,
+        std::chrono::milliseconds lock_timeout = default_lock_timeout);
+
+    // Non-persistent collection inside a MemoryStorage; available on every
+    // platform with exactly the same semantics as open().
+    [[nodiscard]] static Result<ObjectCollection> openInMemory(
+        const MemoryStorage &storage, std::string_view collection,
         std::chrono::milliseconds lock_timeout = default_lock_timeout);
 
     [[nodiscard]] Result<ObjectListing> list() const;
@@ -78,13 +94,14 @@ public:
     [[nodiscard]] const std::string &name() const noexcept { return this->name_; }
 
 private:
-    ObjectCollection(std::filesystem::path root_path, std::string name,
-                     std::chrono::milliseconds lock_timeout)
-        : root_path_(std::move(root_path)), name_(std::move(name)), lock_timeout_(lock_timeout) {}
+    ObjectCollection(std::shared_ptr<const detail::CollectionBackend> backend, std::string name)
+        : backend_(std::move(backend)), name_(std::move(name)) {}
 
-    std::filesystem::path root_path_;
+    [[nodiscard]] static Result<ObjectCollection> fromBackend(
+        std::shared_ptr<const detail::CollectionBackend> backend, std::string name);
+
+    std::shared_ptr<const detail::CollectionBackend> backend_;
     std::string name_;
-    std::chrono::milliseconds lock_timeout_;
 };
 
 } // namespace aowis::config

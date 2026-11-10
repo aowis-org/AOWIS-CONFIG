@@ -45,6 +45,8 @@ that have not yet been integrated into consuming applications. See [architecture
 | D31 | Listings report damaged entries (`unreadable`) instead of failing; damaged records are removable only while still corrupt | One broken file cannot hide or block the catalogue; newer-schema records are never deleted |
 | D32 | WireGuard validation is strict on write, informational on read; syntax follows wg(8) case-insensitivity and `#` comments | Tightening rules never makes stored profiles unreadable; valid real-world configs are not rejected |
 | D33 | Collection locks are time-limited (`lock_timeout`, default 5 s) | A hung instance or stalled filesystem cannot block a caller indefinitely |
+| D34 | Persistent storage sits behind a private backend contract; record format and semantics stay in `ObjectCollection`; one persistent backend per platform chosen at build time | Windows/browser backends add a file, not a second code path; behavior is identical across platforms |
+| D35 | Public `MemoryStorage` backend on every platform, held to the same contract tests | Filesystem-free consumer unit tests; executable reference for new backends |
 
 ## Clarifications that matter
 

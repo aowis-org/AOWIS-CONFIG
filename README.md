@@ -5,7 +5,7 @@ independent **C++20 static library** for application-owned configuration:
 validated owner roots, versioned JSON records, UUIDv7 identities, atomic
 single-record updates, conflict detection, and imported WireGuard profiles.
 
-**Current release:** `0.4.0` · **Current milestone:** Phase 3 complete on native
+**Current release:** `0.5.0` · **Current milestone:** Phase 3 complete on native
 POSIX; Phase 4 (AOWIS-GUI integration) is next. This is a pre-1.0 project:
 public APIs and schemas may change. There are **no productive installations**
 requiring migration of AOWIS's experimental settings.
@@ -22,6 +22,7 @@ requiring migration of AOWIS's experimental settings.
 | Build and test the repository | [Quickstart](docs/quickstart.md) |
 | Embed the library in an AOWIS component | [Consumer integration](docs/integration-guide.md) |
 | Understand current C++ entry points | [Library API](docs/library-api.md), [Storage API](docs/storage-api.md) |
+| Understand or add a storage backend; test without a filesystem | [Storage backends](docs/storage-backends.md) |
 | Import and manage WireGuard profiles | [WireGuard profiles](docs/wireguard-profiles.md) |
 | Understand boundaries and filesystem ownership | [Architecture](docs/architecture.md) |
 | Back up, restore, or troubleshoot a configuration | [Operations and security](docs/operations.md) |
@@ -52,9 +53,10 @@ AOWIS-NETWORK, or external JSON-library dependencies**. See the
 | --- | --- |
 | Owner IDs and configuration-root resolution | Available (native POSIX and Windows path resolution) |
 | Strict JSON-object validation and UUIDv7 IDs | Available |
-| Private object collections; CRUD and revision tokens | **Native POSIX only** |
+| Private object collections; CRUD and revision tokens | **Native POSIX** persistent; in-memory on every platform |
+| Pluggable storage backend interface with shared contract tests | Available (POSIX, memory; Windows/browser pending) |
 | Atomic per-record publication, collection locks, interruption tests | **Native POSIX only** |
-| WireGuard profile import/edit/read/list/export/delete | **Native POSIX only** |
+| WireGuard profile import/edit/read/list/export/delete | **Native POSIX** persistent; in-memory on every platform |
 | Lossless imported `.conf` text (including keys) inside owned JSON records | Available via WireGuard profiles API |
 | AOWIS-GUI persistence, connection references, and live status | **Not integrated yet (Phase 4)** |
 | Preference store, Windows storage, browser storage | **Not implemented** |

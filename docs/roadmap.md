@@ -71,7 +71,8 @@ scope until a consumer requires them. See [storage-api.md](storage-api.md).
 - [x] Test corruption, unsupported versions, permissions, invalid JSON,
       relocation/copy, conflicting edits and injected process termination.
 - [ ] Test true power-loss durability on supported filesystems (Phase 7).
-- [ ] Implement corresponding Windows/Android/browser backends (Phase 7).
+- [ ] Implement Windows and browser backends behind the backend contract
+      (Android uses the POSIX backend with an explicit root).
 
 **Acceptance on native POSIX:** Each object is a complete, durable record under
 normal POSIX fsync/rename guarantees. `SIGKILL` injection and restart recovery
@@ -105,7 +106,7 @@ failed callback fails closed. Structural validation blocks malformed text;
 portability warnings remain visible but do not rewrite stored configuration.
 No live tunnel status is stored by CONFIG.
 
-### Phase 3 hardening (v0.4.0, pre-Phase 4 review) — done
+### Phase 3 hardening (v0.5.0, pre-Phase 4 review) — done
 
 - [x] Accept symlinked ancestors above the owner directory; keep `O_NOFOLLOW`
       and privacy checks from the owner directory down.
@@ -117,9 +118,11 @@ No live tunnel status is stored by CONFIG.
       external-reference warning for base64 keys starting with `/`.
 - [x] Time-limited collection locks (`lock_timeout`); orphan recovery only on
       `open()` and writes.
-- [ ] Pluggable storage backend interface (native POSIX, Windows, browser)
-      **before Phase 5**, so consolidated GUI settings do not need a second,
-      WASM-only persistence path.
+- [x] Pluggable storage backend interface (v0.5.0): private contract,
+      native POSIX and in-memory backends, shared contract tests; Windows and
+      browser use a placeholder returning `unsupported_platform`.
+- [ ] Browser backend **before or with Phase 5** (GUI settings must persist
+      in WASM); Windows backend before Phase 4 ships on the Standalone build.
 
 ## Phase 4 — AOWIS-GUI integration (separate repository)
 

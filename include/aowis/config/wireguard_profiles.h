@@ -84,6 +84,9 @@ class WireGuardProfiles final {
 public:
     [[nodiscard]] static Result<WireGuardProfiles> open(
         const ConfigRoot &root, std::chrono::milliseconds lock_timeout = default_lock_timeout);
+    // Wraps an already opened collection, e.g. ObjectCollection::openInMemory()
+    // for unit tests. The collection must be named "wireguard".
+    [[nodiscard]] static Result<WireGuardProfiles> fromCollection(ObjectCollection collection);
 
     // One locked pass over the collection; never fails because of one damaged record.
     [[nodiscard]] Result<WireGuardProfileListing> list() const;

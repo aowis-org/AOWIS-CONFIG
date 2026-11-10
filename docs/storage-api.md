@@ -1,6 +1,6 @@
 # Phase 2 — native object storage API
 
-Status: **implemented in v0.4.0 on native POSIX (including Linux)**, C++20, dependency-free. For a minimal runnable program see [Quickstart](quickstart.md); for backup and recovery see [Operations](operations.md).
+Status: **implemented in v0.5.0 on native POSIX (including Linux)**, C++20, dependency-free. For a minimal runnable program see [Quickstart](quickstart.md); for backup and recovery see [Operations](operations.md).
 Windows, Android-specific policy and Emscripten/browser persistence remain later
 platform work. This is **generic configuration object storage**. The typed WireGuard
 importer is now implemented above it in Phase 3; see
@@ -78,7 +78,8 @@ Public functions:
 | `ObjectId::parse(text)` | Accepts lowercase RFC 9562 UUIDv7 with correct variant and canonical hyphens |
 | `ObjectId::generate()` | Creates UUIDv7 from wall-clock milliseconds and OS randomness (`getrandom` on Linux) |
 | `validateJsonObject(text)` | Strict JSON object syntax and UTF-8 check; payload semantics are caller-owned |
-| `ObjectCollection::open(root, name, lock_timeout=5s)` | Validates collection name; opens/creates private owner and collection directories; removes crash orphans |
+| `ObjectCollection::open(root, name, lock_timeout=5s)` | Validates collection name; opens the platform's persistent backend (native POSIX: creates/verifies private owner and collection directories, removes crash orphans); `unsupported_platform` on Windows/Emscripten for now |
+| `ObjectCollection::openInMemory(storage, name, lock_timeout=5s)` | Same semantics on a non-persistent `MemoryStorage`; every platform. See [storage-backends.md](storage-backends.md) |
 | `list()` | `ObjectListing`: sorted IDs, schema versions, revisions (**no payload or secrets**) plus `unreadable` entries |
 | `readAll()` | `ObjectSnapshot`: every readable record with payload, plus `unreadable`, loaded under **one** lock |
 | `read(id)` | Returns the complete payload and revision token |
