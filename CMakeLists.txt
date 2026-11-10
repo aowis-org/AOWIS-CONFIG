@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(AOWISConfig VERSION 0.5.0 LANGUAGES CXX)
+project(AOWISConfig VERSION 0.6.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)

@@ -8,8 +8,8 @@
 namespace aowis::config {
 
 // Resolves an owner's *configuration location only*. These methods perform
-// no filesystem writes, symlink checks, locks or permission changes. Those
-// are reserved for the Phase 2 storage engine.
+// no filesystem writes, symlink checks, locks or permission changes; those
+// happen in OwnerStore::open().
 class ConfigRoot final {
 public:
     // namespace_root is the absolute path to the 'aowis' directory.
@@ -22,7 +22,9 @@ public:
         OwnerId owner, const std::filesystem::path &owner_root);
 
     // Native user root: XDG_CONFIG_HOME/aowis/<owner> or HOME/.config/aowis/<owner>
-    // on POSIX, and APPDATA/aowis/<owner> on Windows. Never creates directories.
+    // on POSIX, and LOCALAPPDATA/aowis/<owner> on Windows (never the roaming
+    // APPDATA: roots hold private keys). Never creates directories. Android
+    // has no meaningful HOME/XDG: pass an explicit root from QStandardPaths.
     [[nodiscard]] static Result<ConfigRoot> forCurrentUser(OwnerId owner);
 
     [[nodiscard]] const OwnerId &owner() const noexcept { return this->owner_; }

@@ -30,6 +30,10 @@ using aowis::config::ObjectId;
 using aowis::config::OwnerId;
 using aowis::config::ObjectListing;
 using aowis::config::ObjectSnapshot;
+using aowis::config::AccessMode;
+using aowis::config::OpenOptions;
+using aowis::config::OwnerSession;
+using aowis::config::OwnerStore;
 using aowis::config::Result;
 using aowis::config::StoredObject;
 
@@ -95,9 +99,18 @@ ConfigRoot ownerRoot(const std::filesystem::path &path)
     return root.value();
 }
 
+Result<ObjectCollection> openCollection(const ConfigRoot &root, std::string_view name,
+                                       std::chrono::milliseconds timeout = aowis::config::default_lock_timeout,
+                                       AccessMode mode = AccessMode::read_write)
+{
+    Result<OwnerStore> store = OwnerStore::open(root, OpenOptions{mode, timeout});
+    if (!store) return Result<ObjectCollection>::failure(store.error());
+    return store.value().collection(name);
+}
+
 ObjectCollection collection(const std::filesystem::path &path, std::string_view name = "wireguard")
 {
-    Result<ObjectCollection> opened = ObjectCollection::open(ownerRoot(path), name);
+    Result<ObjectCollection> opened = openCollection(ownerRoot(path), name);
     require(opened.hasValue(), "cannot open test collection");
     return opened.value();
 }
@@ -116,7 +129,8 @@ void basicCrud()
     ObjectCollection stored = collection(root);
     requireMode(root, 0700);
     requireMode(root / "wireguard", 0700);
-    requireMode(root / "wireguard" / ".lock", 0600);
+    requireMode(root / ".lock", 0600);
+    require(!std::filesystem::exists(root / "wireguard" / ".lock"), "per-collection lock still created");
     require(stored.list() && stored.list().value().objects.empty(), "new collection not empty");
     Result<StoredObject> created = stored.create("{\"conf\":\"[Interface]\\nPrivateKey = EXAMPLE\\n\",\"name\":\"Test\"}");
     require(created.hasValue(), "cannot create test object");
@@ -130,7 +144,7 @@ void basicCrud()
     Result<StoredObject> reloaded = stored.read(id);
     require(reloaded && reloaded.value().json == created.value().json, "payload lost on read");
     require(reloaded.value().info.revision == created.value().info.revision, "revision changed on read");
-    Result<ObjectCollection> reopened = ObjectCollection::open(ownerRoot(root), "wireguard");
+    Result<ObjectCollection> reopened = openCollection(ownerRoot(root), "wireguard");
     require(reopened && reopened.value().read(id).hasValue(), "reopen failed");
     require(!stored.update(id, "{}", "bad") && stored.update(id, "{}", "bad").error().code == ErrorCode::conflict,
             "stale edit accepted");
@@ -157,9 +171,7 @@ void validationAndCorruption()
     ObjectCollection stored = collection(root);
     Result<StoredObject> bad = stored.create("{\"bad\":}");
     require(!bad && bad.error().code == ErrorCode::invalid_json, "invalid data was stored");
-    Result<StoredObject> future = stored.create("{}", 2);
-    require(!future && future.error().code == ErrorCode::unsupported_schema, "unsupported writer schema accepted");
-    require(!ObjectCollection::open(ownerRoot(root), "../bad"), "collection path traversal accepted");
+    require(!openCollection(ownerRoot(root), "../bad"), "collection path traversal accepted");
     Result<StoredObject> created = stored.create("{\"name\":\"a\"}");
     require(created.hasValue(), "cannot seed corruption test");
     const std::filesystem::path file = root / "wireguard" / (created.value().info.id.value() + ".json");
@@ -199,7 +211,7 @@ void validationAndCorruption()
     const std::filesystem::path future_file = root / "wireguard" / (future_record.value().info.id.value() + ".json");
     {
         std::ofstream output(future_file, std::ios::trunc);
-        output << "{\"schema_version\":2,\"id\":\"" << future_record.value().info.id.value()
+        output << "{\"envelope_version\":2,\"id\":\"" << future_record.value().info.id.value()
                << "\",\"revision\":\"" << future_record.value().info.revision
                << "\",\"payload\":{}}";
     }
@@ -221,17 +233,17 @@ void attacksAndPermissions()
     std::filesystem::create_symlink(directory.path() / "real", link);
     // A symlinked *ancestor* (/home -> /var/home, ~/.config -> dotfiles) is
     // legitimate and reaches the same private owner directory.
-    Result<ObjectCollection> via_ancestor = ObjectCollection::open(ownerRoot(link / "gui"), "wireguard");
+    Result<ObjectCollection> via_ancestor = openCollection(ownerRoot(link / "gui"), "wireguard");
     require(via_ancestor.hasValue(), "symlinked ancestor rejected");
-    Result<ObjectCollection> new_via_ancestor = ObjectCollection::open(ownerRoot(link / "fresh" / "gui"), "wireguard");
+    Result<ObjectCollection> new_via_ancestor = openCollection(ownerRoot(link / "fresh" / "gui"), "wireguard");
     require(new_via_ancestor.hasValue() && std::filesystem::is_directory(directory.path() / "real" / "fresh" / "gui"),
             "missing ancestor below a symlink not created");
     // The owner directory itself is the security boundary and must not be a symlink.
     std::filesystem::create_directory_symlink(root, directory.path() / "real" / "gui-link");
-    Result<ObjectCollection> owner_link = ObjectCollection::open(ownerRoot(directory.path() / "real" / "gui-link"), "wireguard");
+    Result<ObjectCollection> owner_link = openCollection(ownerRoot(directory.path() / "real" / "gui-link"), "wireguard");
     require(!owner_link && owner_link.error().code == ErrorCode::unsafe_path, "symlink owner root accepted");
     std::filesystem::create_symlink(root / "wireguard", root / "evil");
-    require(!ObjectCollection::open(ownerRoot(root), "evil"), "symlink collection accepted");
+    require(!openCollection(ownerRoot(root), "evil"), "symlink collection accepted");
     Result<StoredObject> created = stored.create("{}");
     require(created.hasValue(), "cannot seed symlink test");
     const std::filesystem::path file = root / "wireguard" / (created.value().info.id.value() + ".json");
@@ -248,10 +260,10 @@ void attacksAndPermissions()
             && std::filesystem::is_symlink(file), "eraseCorrupt touched an unsafe entry");
     std::filesystem::remove(file);
     require(::chmod((root / "wireguard").c_str(), 0755) == 0, "cannot alter test directory permissions");
-    require(!ObjectCollection::open(ownerRoot(root), "wireguard"), "insecure collection accepted");
+    require(!openCollection(ownerRoot(root), "wireguard"), "insecure collection accepted");
     require(::chmod((root / "wireguard").c_str(), 0700) == 0, "cannot restore permissions");
     require(::chmod(root.c_str(), 0777) == 0, "cannot alter owner permissions");
-    require(!ObjectCollection::open(ownerRoot(root), "wireguard"), "insecure owner accepted");
+    require(!openCollection(ownerRoot(root), "wireguard"), "insecure owner accepted");
 }
 
 void crashRecovery()
@@ -278,7 +290,7 @@ void crashRecovery()
     // Readers skip orphans; the next open() or write removes them.
     require(stored.list() && stored.list().value().objects.size() == 1 && stored.list().value().unreadable.empty(),
             "orphan temp visible to readers");
-    require(ObjectCollection::open(ownerRoot(root), "wireguard").hasValue(), "reopen after crash failed");
+    require(openCollection(ownerRoot(root), "wireguard").hasValue(), "reopen after crash failed");
     for (const std::filesystem::directory_entry &entry : std::filesystem::directory_iterator(root / "wireguard")) {
         require(!entry.path().filename().string().starts_with(".tmp-"), "orphan temp not recovered");
     }
@@ -362,7 +374,7 @@ void additionalCorruptionAndSecurity()
     require(unrelated.hasValue(), "cannot generate wrong identity");
     {
         std::ofstream output(file, std::ios::trunc);
-        output << "{\"schema_version\":1,\"id\":\"" << unrelated.value().value()
+        output << "{\"envelope_version\":1,\"id\":\"" << unrelated.value().value()
                << "\",\"revision\":\"" << created.value().info.revision
                << "\",\"payload\":{}}";
     }
@@ -382,6 +394,50 @@ void additionalCorruptionAndSecurity()
             "unrecognized object file was silently skipped");
 }
 
+void readOnlyMode()
+{
+    TemporaryDirectory directory;
+    const std::filesystem::path root = directory.path() / "etc" / "aowis" / "server-dvmdb";
+    Result<OwnerStore> missing = OwnerStore::open(ownerRoot(root), OpenOptions{AccessMode::read_only});
+    require(!missing && missing.error().code == ErrorCode::not_found, "missing read-only root not reported");
+    require(!std::filesystem::exists(directory.path() / "etc"), "read-only open created directories");
+
+    ObjectCollection writer = collection(root, "settings");
+    Result<StoredObject> created = writer.create("{\"listen\":\"0.0.0.0:8755\"}");
+    require(created.hasValue(), "cannot seed read-only test");
+    std::filesystem::remove(root / ".lock");
+    // Administrator layout: group-readable, never group-writable.
+    require(::chmod(root.c_str(), 0750) == 0 && ::chmod((root / "settings").c_str(), 0750) == 0
+            && ::chmod((root / "settings" / (created.value().info.id.value() + ".json")).c_str(), 0640) == 0,
+            "cannot prepare administrator permissions");
+    Result<ObjectCollection> rejected = openCollection(ownerRoot(root), "settings");
+    require(!rejected, "read-write mode accepted group-readable store");
+
+    Result<OwnerStore> store = OwnerStore::open(ownerRoot(root), OpenOptions{AccessMode::read_only});
+    require(store && store.value().mode() == AccessMode::read_only, "read-only open failed");
+    Result<ObjectCollection> settings = store.value().collection("settings");
+    require(settings.hasValue(), "read-only collection failed");
+    Result<StoredObject> loaded = settings.value().read(created.value().info.id);
+    require(loaded && loaded.value().json == created.value().json, "read-only read failed");
+    require(settings.value().list() && settings.value().list().value().objects.size() == 1, "read-only list failed");
+    Result<StoredObject> write = settings.value().create("{}");
+    require(!write && write.error().code == ErrorCode::permission_denied, "read-only write accepted");
+    Result<bool> removal = settings.value().erase(created.value().info.id, created.value().info.revision);
+    require(!removal && removal.error().code == ErrorCode::permission_denied, "read-only erase accepted");
+    require(!std::filesystem::exists(root / ".lock"), "read-only access created a lock file");
+    Result<ObjectCollection> absent = store.value().collection("connections");
+    require(absent && absent.value().list() && absent.value().list().value().objects.empty(),
+            "missing read-only collection not empty");
+    require(!std::filesystem::exists(root / "connections"), "read-only access created a collection");
+
+    require(::chmod((root / "settings").c_str(), 0770) == 0, "cannot make collection group-writable");
+    require(!store.value().collection("settings"), "group-writable read-only collection accepted");
+    require(::chmod((root / "settings").c_str(), 0750) == 0, "cannot restore collection");
+    std::filesystem::create_directory_symlink(root / "settings", root / "linked");
+    Result<ObjectCollection> linked = store.value().collection("linked");
+    require(!linked && linked.error().code == ErrorCode::unsafe_path, "read-only mode followed symlink");
+}
+
 void lockTimeout()
 {
     TemporaryDirectory directory;
@@ -398,7 +454,7 @@ void lockTimeout()
         // Simulates a hung second instance holding the collection lock.
         ::close(ready[0]);
         ::close(release[1]);
-        const int lock = ::open((root / "wireguard" / ".lock").c_str(), O_RDWR | O_CLOEXEC);
+        const int lock = ::open((root / ".lock").c_str(), O_RDWR | O_CLOEXEC);
         if (lock < 0 || ::flock(lock, LOCK_EX) < 0) ::_exit(60);
         if (::write(ready[1], "x", 1) != 1) ::_exit(61);
         char signal = 0;
@@ -410,12 +466,19 @@ void lockTimeout()
     char signal = 0;
     require(::read(ready[0], &signal, 1) == 1, "lock holder did not start");
     const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
-    Result<ObjectCollection> blocked = ObjectCollection::open(ownerRoot(root), "wireguard", std::chrono::milliseconds(100));
+    Result<ObjectCollection> blocked = openCollection(ownerRoot(root), "wireguard", std::chrono::milliseconds(100));
     const std::chrono::steady_clock::duration waited = std::chrono::steady_clock::now() - started;
     require(!blocked && blocked.error().code == ErrorCode::lock_timeout, "held lock did not time out");
     require(waited >= std::chrono::milliseconds(100) && waited < std::chrono::seconds(3), "lock timeout not honoured");
-    Result<ObjectCollection> immediate = ObjectCollection::open(ownerRoot(root), "wireguard", std::chrono::milliseconds(0));
+    Result<ObjectCollection> immediate = openCollection(ownerRoot(root), "wireguard", std::chrono::milliseconds(0));
     require(!immediate && immediate.error().code == ErrorCode::lock_timeout, "zero timeout blocked or succeeded");
+    // The lock is per owner: every other collection of the owner is blocked too.
+    Result<ObjectCollection> other = openCollection(ownerRoot(root), "connections", std::chrono::milliseconds(0));
+    require(!other && other.error().code == ErrorCode::lock_timeout, "owner lock did not cover other collections");
+    // Read-only access takes no lock and is not blocked by a writer.
+    Result<ObjectCollection> reader = openCollection(ownerRoot(root), "wireguard", std::chrono::milliseconds(0),
+                                                     AccessMode::read_only);
+    require(reader && reader.value().read(created.value().info.id).hasValue(), "read-only access blocked by lock");
     require(::write(release[1], "x", 1) == 1, "cannot release lock holder");
     ::close(release[1]);
     ::close(ready[0]);
@@ -442,6 +505,7 @@ int main()
         copyAndOwnerIsolation();
         additionalCorruptionAndSecurity();
         lockTimeout();
+        readOnlyMode();
 #endif
         std::cout << "AOWIS-CONFIG object store tests passed\n";
         return 0;

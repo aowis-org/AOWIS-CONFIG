@@ -14,8 +14,8 @@ struct MemoryState;
 
 // Non-persistent, in-process storage standing in for one owner root. Copies
 // of a MemoryStorage share the same contents (handle semantics) and all
-// operations are thread-safe. Use ObjectCollection::openInMemory() /
-// WireGuardProfiles::fromCollection() to work with it. It is available on
+// operations are thread-safe. Use OwnerStore::openInMemory() to work with
+// it. It is available on
 // every platform, so consumer unit tests (e.g. GUI settings widgets) need no
 // filesystem, and it is the reference implementation of the backend contract.
 // Nothing is ever written to disk; contents vanish with the last handle.
@@ -35,7 +35,7 @@ public:
 private:
     std::shared_ptr<detail::MemoryState> state_;
 
-    friend class ObjectCollection;
+    friend class OwnerStore;
 };
 
 } // namespace aowis::config

@@ -24,7 +24,11 @@
 #endif
 
 namespace {
+using aowis::config::AccessMode;
 using aowis::config::ErrorCode;
+using aowis::config::OpenOptions;
+using aowis::config::OwnerSession;
+using aowis::config::OwnerStore;
 using aowis::config::MemoryStorage;
 using aowis::config::ObjectCollection;
 using aowis::config::ObjectId;
@@ -47,8 +51,15 @@ void require(bool valid, const std::string &message)
 // under an entry name to simulate damage, as a crash or a user edit would.
 struct Fixture {
     std::string backend;
-    std::function<Result<ObjectCollection>(const std::string &, std::chrono::milliseconds)> open;
+    std::function<Result<OwnerStore>(OpenOptions)> store;
     std::function<void(const std::string &, const std::string &, const std::string &)> plant;
+
+    [[nodiscard]] Result<ObjectCollection> open(const std::string &name, std::chrono::milliseconds timeout) const
+    {
+        Result<OwnerStore> opened = this->store(OpenOptions{AccessMode::read_write, timeout});
+        if (!opened) return Result<ObjectCollection>::failure(opened.error());
+        return opened.value().collection(name);
+    }
 };
 
 ObjectCollection opened(const Fixture &fixture, const std::string &name)
@@ -96,7 +107,7 @@ void damagedEntries(const Fixture &fixture)
     require(healthy && victim && future, tag + "cannot seed damage test");
     fixture.plant("damage", victim.value().info.id.value() + ".json", "{corrupt");
     fixture.plant("damage", future.value().info.id.value() + ".json",
-                  "{\"schema_version\":2,\"id\":\"" + future.value().info.id.value() + "\",\"revision\":\""
+                  "{\"envelope_version\":2,\"id\":\"" + future.value().info.id.value() + "\",\"revision\":\""
                       + future.value().info.revision + "\",\"payload\":{}}");
     fixture.plant("damage", "foreign.json", "{}");
     fixture.plant("damage", "notes.txt", "ignored: not a .json entry");
@@ -188,10 +199,10 @@ void lockTimeout(const Fixture &fixture)
 void wireGuardOnBackend(const Fixture &fixture)
 {
     const std::string tag = fixture.backend + ": ";
-    Result<WireGuardProfiles> wrong = WireGuardProfiles::fromCollection(opened(fixture, "items"));
-    require(!wrong && wrong.error().code == ErrorCode::invalid_collection, tag + "wrong collection accepted");
-    Result<WireGuardProfiles> opened_profiles = WireGuardProfiles::fromCollection(opened(fixture, "wireguard"));
-    require(opened_profiles.hasValue(), tag + "fromCollection failed");
+    Result<OwnerStore> store = fixture.store(OpenOptions{});
+    require(store.hasValue(), tag + "store failed");
+    Result<WireGuardProfiles> opened_profiles = WireGuardProfiles::open(store.value());
+    require(opened_profiles.hasValue(), tag + "WireGuardProfiles::open failed");
     const WireGuardProfiles &profiles = opened_profiles.value();
     const std::string text = "[Interface]\nPrivateKey = abc\n[Peer]\nPublicKey = def\n";
     Result<WireGuardProfile> created = profiles.importText(WireGuardProfileInput{"VPN", "", text});
@@ -202,11 +213,69 @@ void wireGuardOnBackend(const Fixture &fixture)
     require(listed && listed.value().profiles.size() == 1 && listed.value().unreadable.size() == 1,
             tag + "WireGuard listing on backend");
     require(profiles.exportText(created.value().summary.info.id).value() == text, tag + "text not lossless");
-    const WireGuardReferenceCount unused = [](const ObjectId &) { return Result<std::size_t>::success(0); };
+    const WireGuardReferenceCount unused = [](const OwnerSession &, const ObjectId &) {
+        return Result<std::size_t>::success(0);
+    };
     require(profiles.eraseUnreadable(broken.value().summary.info.id, unused).hasValue(), tag + "eraseUnreadable");
     require(profiles.erase(created.value().summary.info.id, created.value().summary.info.revision, unused).hasValue(),
             tag + "erase");
     require(profiles.list().value().profiles.empty(), tag + "profiles remain");
+}
+
+void ownerSessions(const Fixture &fixture)
+{
+    // One held read-write session excludes every other read-write session of
+    // the owner, for every collection, until it is released. Read-only
+    // sessions are never blocked.
+    const std::string tag = fixture.backend + ": ";
+    Result<OwnerStore> store = fixture.store(OpenOptions{});
+    require(store.hasValue(), tag + "store failed");
+    const ObjectCollection items = store.value().collection("items").value();
+    Result<OwnerSession> held = store.value().lock();
+    require(held.hasValue(), tag + "lock failed");
+    Result<StoredObject> inside = items.create(held.value(), "{\"in\":\"session\"}");
+    require(inside.hasValue(), tag + "write inside session failed");
+    std::atomic<int> blocked{0};
+    std::atomic<int> readable{0};
+    std::thread other([&fixture, &blocked, &readable, &inside]() {
+        // A persistent backend verifies the root under the lock in open(),
+        // so the second writer may already be refused there.
+        Result<OwnerStore> second = fixture.store(OpenOptions{AccessMode::read_write, std::chrono::milliseconds(50)});
+        if (!second) {
+            if (second.error().code == ErrorCode::lock_timeout) ++blocked;
+        } else {
+            Result<OwnerSession> lock = second.value().lock();
+            if (!lock && lock.error().code == ErrorCode::lock_timeout) ++blocked;
+        }
+        Result<OwnerStore> reader = fixture.store(OpenOptions{AccessMode::read_only, std::chrono::milliseconds(0)});
+        if (!reader) return;
+        Result<ObjectCollection> items_ro = reader.value().collection("items");
+        if (items_ro && items_ro.value().read(inside.value().info.id)) ++readable;
+    });
+    other.join();
+    require(blocked == 1, tag + "held session did not exclude another writer");
+    require(readable == 1, tag + "read-only access blocked or missed committed write");
+    held = Result<OwnerSession>::failure({ErrorCode::not_found, "released"}); // Releases the lock.
+    Result<OwnerStore> later = fixture.store(OpenOptions{AccessMode::read_write, std::chrono::milliseconds(0)});
+    require(later && later.value().lock().hasValue(), tag + "lock not released with session");
+}
+
+void readOnlyContract(const Fixture &fixture)
+{
+    const std::string tag = fixture.backend + ": ";
+    ObjectCollection writer = opened(fixture, "ro");
+    Result<StoredObject> seed = writer.create("{\"seed\":1}");
+    require(seed.hasValue(), tag + "cannot seed read-only test");
+    Result<OwnerStore> store = fixture.store(OpenOptions{AccessMode::read_only});
+    require(store && store.value().mode() == AccessMode::read_only, tag + "read-only store failed");
+    Result<ObjectCollection> reader = store.value().collection("ro");
+    require(reader && reader.value().read(seed.value().info.id).hasValue(), tag + "read-only read failed");
+    Result<StoredObject> write = reader.value().create("{}");
+    require(!write && write.error().code == ErrorCode::permission_denied, tag + "read-only create accepted");
+    Result<StoredObject> update = reader.value().update(seed.value().info.id, "{}", seed.value().info.revision);
+    require(!update && update.error().code == ErrorCode::permission_denied, tag + "read-only update accepted");
+    Result<ObjectCollection> missing = store.value().collection("never-created");
+    require(missing && missing.value().list().value().objects.empty(), tag + "missing read-only collection not empty");
 }
 
 void runContract(const Fixture &fixture)
@@ -216,6 +285,8 @@ void runContract(const Fixture &fixture)
     exclusiveSessions(fixture);
     lockTimeout(fixture);
     wireGuardOnBackend(fixture);
+    ownerSessions(fixture);
+    readOnlyContract(fixture);
     std::cout << "contract passed: " << fixture.backend << '\n';
 }
 
@@ -223,37 +294,35 @@ void memorySpecifics()
 {
     MemoryStorage storage;
     MemoryStorage shared = storage; // Handle semantics: copies share contents.
-    Result<ObjectCollection> first = ObjectCollection::openInMemory(storage, "items");
-    Result<ObjectCollection> second = ObjectCollection::openInMemory(shared, "items");
+    Result<ObjectCollection> first = OwnerStore::openInMemory(storage).value().collection("items");
+    Result<ObjectCollection> second = OwnerStore::openInMemory(shared).value().collection("items");
     require(first && second, "memory: open failed");
     Result<StoredObject> created = first.value().create("{\"x\":1}");
     require(created && second.value().read(created.value().info.id).hasValue(), "memory: copies do not share");
     Result<std::string> raw = storage.readRawEntry("items", created.value().info.id.value() + ".json");
     require(raw && raw.value().find("\"payload\":{\"x\":1}") != std::string::npos, "memory: raw entry not envelope");
     MemoryStorage isolated;
-    require(ObjectCollection::openInMemory(isolated, "items").value().list().value().objects.empty(),
+    require(OwnerStore::openInMemory(isolated).value().collection("items").value().list().value().objects.empty(),
             "memory: separate storages share contents");
     require(!storage.writeRawEntry("../x", "a.json", "{}"), "memory: invalid raw collection accepted");
     require(!storage.writeRawEntry("items", "a/b.json", "{}"), "memory: raw entry path accepted");
-    require(!ObjectCollection::openInMemory(storage, "Bad Name"), "memory: invalid collection accepted");
+    require(!OwnerStore::openInMemory(storage).value().collection("Bad Name"), "memory: invalid collection accepted");
 }
 
 std::vector<Fixture> backends(MemoryStorage &memory, const std::filesystem::path &native_root)
 {
     std::vector<Fixture> fixtures;
     fixtures.push_back({"memory",
-        [memory](const std::string &name, std::chrono::milliseconds timeout) {
-            return ObjectCollection::openInMemory(memory, name, timeout);
-        },
+        [memory](OpenOptions options) { return OwnerStore::openInMemory(memory, options); },
         [memory](const std::string &collection, const std::string &entry, const std::string &bytes) {
             require(memory.writeRawEntry(collection, entry, bytes).hasValue(), "memory: cannot plant entry");
         }});
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
     fixtures.push_back({"native-posix",
-        [native_root](const std::string &name, std::chrono::milliseconds timeout) {
+        [native_root](OpenOptions options) {
             Result<aowis::config::OwnerId> owner = aowis::config::OwnerId::parse("gui");
             Result<aowis::config::ConfigRoot> root = aowis::config::ConfigRoot::fromOwnerRoot(owner.value(), native_root);
-            return ObjectCollection::open(root.value(), name, timeout);
+            return OwnerStore::open(root.value(), options);
         },
         [native_root](const std::string &collection, const std::string &entry, const std::string &bytes) {
             const std::filesystem::path file = native_root / collection / entry;

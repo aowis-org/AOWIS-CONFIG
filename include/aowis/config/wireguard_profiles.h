@@ -6,49 +6,22 @@
 #include <functional>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace aowis::config {
 
-// The validator checks the portable INI-like structure, not whether the
-// running AOWIS-NETWORK backend supports each directive or can reach peers.
-enum class WireGuardIssueSeverity { warning, error };
-enum class WireGuardIssueCode {
-    empty_configuration,
-    invalid_encoding,
-    invalid_line,
-    missing_interface,
-    duplicate_interface,
-    unexpected_section,
-    directive_outside_section,
-    empty_value,
-    unknown_directive,
-    requires_wg_quick,
-    external_command,
-    external_reference,
-    missing_private_key,
-    missing_peer_public_key,
-};
+// Storage of imported WireGuard configurations. This library deliberately
+// does NOT interpret WireGuard syntax: the only authority on whether a
+// configuration can run is the tunnel engine (AOWIS-NETWORK's
+// parseWireGuardConf()), which the application calls on import and edit.
+// Stored here is the exact original text plus name and description; the only
+// checks are text integrity: nonempty, at most 2 MiB, valid UTF-8, no NUL.
 
-struct WireGuardIssue {
-    WireGuardIssueSeverity severity;
-    WireGuardIssueCode code;
-    std::size_t line; // 1-based line number, or zero for whole-file issues.
-    std::string message; // Never embeds configuration text or key material.
-};
-
-struct WireGuardValidation {
-    std::vector<WireGuardIssue> issues;
-    bool has_errors = false; // Includes errors after the issue-list cap.
-    [[nodiscard]] bool valid() const noexcept;
-};
-
-[[nodiscard]] WireGuardValidation validateWireGuardConfiguration(std::string_view text);
+inline constexpr std::size_t max_wireguard_configuration_bytes = 2U * 1024U * 1024U;
 
 struct WireGuardProfileInput {
-    std::string name;
-    std::string description;
+    std::string name; // Nonblank UTF-8, at most 256 bytes, no CR/LF/NUL.
+    std::string description; // UTF-8, at most 4096 bytes, no NUL.
     std::string configuration; // Complete original .conf text, including private keys.
 };
 
@@ -61,54 +34,62 @@ struct WireGuardProfileSummary {
 struct WireGuardProfile {
     WireGuardProfileSummary summary;
     std::string configuration;
-    // Validation of the stored text against the *current* rules. Writes are
-    // only accepted without errors, but read() never rejects a stored profile
-    // because the validator became stricter: has_errors may then be true and
-    // the editor must show the issues so the user can repair the text.
-    WireGuardValidation validation;
 };
 
 struct WireGuardProfileListing {
     std::vector<WireGuardProfileSummary> profiles; // Sorted by ID.
-    // Records whose envelope or WireGuard payload cannot be decoded; remove
-    // them with WireGuardProfiles::eraseUnreadable() after user confirmation.
+    // Records whose envelope or profile payload cannot be decoded; remove them
+    // with eraseUnreadable() after user confirmation.
     std::vector<UnreadableObject> unreadable;
 };
 
-// The owning application must query its authoritative configured-service
-// catalogue. A missing/failed resolver blocks deletion; a nonzero count
-// blocks deletion. Cross-collection catalog edits are NOT atomic with erase.
-using WireGuardReferenceCount = std::function<Result<std::size_t>(const ObjectId &)>;
+// The owning application's authoritative count of configured services that
+// reference the profile. It is called inside the same owner session as the
+// deletion, so it must read its catalogue through that session (e.g.
+// connections.list(session)); no other instance can add a reference between
+// the count and the delete. A missing/failed callback or a nonzero count
+// blocks deletion.
+using WireGuardReferenceCount = std::function<Result<std::size_t>(const OwnerSession &, const ObjectId &)>;
 
 class WireGuardProfiles final {
 public:
-    [[nodiscard]] static Result<WireGuardProfiles> open(
-        const ConfigRoot &root, std::chrono::milliseconds lock_timeout = default_lock_timeout);
-    // Wraps an already opened collection, e.g. ObjectCollection::openInMemory()
-    // for unit tests. The collection must be named "wireguard".
-    [[nodiscard]] static Result<WireGuardProfiles> fromCollection(ObjectCollection collection);
+    // Opens the owner's "wireguard" collection (any backend, any mode).
+    [[nodiscard]] static Result<WireGuardProfiles> open(const OwnerStore &store);
 
-    // One locked pass over the collection; never fails because of one damaged record.
+    // One session over the collection; never fails because of one damaged record.
     [[nodiscard]] Result<WireGuardProfileListing> list() const;
     [[nodiscard]] Result<WireGuardProfile> read(const ObjectId &id) const;
     [[nodiscard]] Result<WireGuardProfile> importText(const WireGuardProfileInput &input) const;
-    [[nodiscard]] Result<WireGuardProfile> update(const ObjectId &id,
-                                                   std::string_view expected_revision,
+    [[nodiscard]] Result<WireGuardProfile> update(const ObjectId &id, std::string_view expected_revision,
                                                    const WireGuardProfileInput &input) const;
-    [[nodiscard]] Result<bool> erase(const ObjectId &id,
-                                     std::string_view expected_revision,
+    [[nodiscard]] Result<bool> erase(const ObjectId &id, std::string_view expected_revision,
                                      const WireGuardReferenceCount &reference_count) const;
     // Removes a record listed as unreadable (corrupt envelope or not a
-    // decodable WireGuard profile). The reference guard is identical to
-    // erase(): an unreadable profile may still be referenced by connections.
-    // A record that decodes as a profile yields conflict; use erase().
+    // decodable profile), with the same reference guard as erase(). A record
+    // that decodes as a profile yields conflict; use erase().
     [[nodiscard]] Result<bool> eraseUnreadable(const ObjectId &id,
                                                const WireGuardReferenceCount &reference_count) const;
     [[nodiscard]] Result<std::string> exportText(const ObjectId &id) const;
 
+    // The same operations inside a caller-held owner session.
+    [[nodiscard]] Result<WireGuardProfileListing> list(const OwnerSession &session) const;
+    [[nodiscard]] Result<WireGuardProfile> read(const OwnerSession &session, const ObjectId &id) const;
+    [[nodiscard]] Result<WireGuardProfile> importText(const OwnerSession &session,
+                                                       const WireGuardProfileInput &input) const;
+    [[nodiscard]] Result<WireGuardProfile> update(const OwnerSession &session, const ObjectId &id,
+                                                   std::string_view expected_revision,
+                                                   const WireGuardProfileInput &input) const;
+    [[nodiscard]] Result<bool> erase(const OwnerSession &session, const ObjectId &id,
+                                     std::string_view expected_revision,
+                                     const WireGuardReferenceCount &reference_count) const;
+    [[nodiscard]] Result<bool> eraseUnreadable(const OwnerSession &session, const ObjectId &id,
+                                               const WireGuardReferenceCount &reference_count) const;
+    [[nodiscard]] Result<std::string> exportText(const OwnerSession &session, const ObjectId &id) const;
+
+    [[nodiscard]] const ObjectCollection &collection() const noexcept { return this->collection_; }
+
 private:
-    explicit WireGuardProfiles(ObjectCollection collection)
-        : collection_(std::move(collection)) {}
+    explicit WireGuardProfiles(ObjectCollection collection) : collection_(std::move(collection)) {}
 
     ObjectCollection collection_;
 };

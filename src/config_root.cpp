@@ -54,12 +54,14 @@ Result<ConfigRoot> ConfigRoot::forCurrentUser(OwnerId owner)
     return Result<ConfigRoot>::failure({ErrorCode::unsupported_platform,
                                        "Browser storage requires an explicit WebAssembly adapter"});
 #elif defined(_WIN32)
-    const std::filesystem::path appdata = environmentAbsolutePath("APPDATA");
-    if (appdata.empty()) {
+    // LOCALAPPDATA, never the roaming APPDATA: owner roots hold private keys,
+    // and roaming profiles are synchronized to domain file servers.
+    const std::filesystem::path local_appdata = environmentAbsolutePath("LOCALAPPDATA");
+    if (local_appdata.empty()) {
         return Result<ConfigRoot>::failure({ErrorCode::missing_environment,
-                                           "APPDATA is unset or not an absolute path"});
+                                           "LOCALAPPDATA is unset or not an absolute path"});
     }
-    return ConfigRoot::fromNamespaceRoot(std::move(owner), appdata / "aowis");
+    return ConfigRoot::fromNamespaceRoot(std::move(owner), local_appdata / "aowis");
 #else
     std::filesystem::path config_base = environmentAbsolutePath("XDG_CONFIG_HOME");
     if (config_base.empty()) {

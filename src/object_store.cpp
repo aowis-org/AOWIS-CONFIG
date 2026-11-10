@@ -8,12 +8,11 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
-#include <memory>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
-
 
 namespace aowis::config {
 namespace {
@@ -28,11 +27,8 @@ bool validRevision(std::string_view revision)
     return true;
 }
 
-Result<bool> validatePayload(std::string_view payload, std::uint32_t schema_version)
+Result<bool> validatePayload(std::string_view payload)
 {
-    if (schema_version != 1) {
-        return Result<bool>::failure({ErrorCode::unsupported_schema, "Only object schema version 1 is supported"});
-    }
     if (payload.size() > max_record_bytes - 512) {
         return Result<bool>::failure({ErrorCode::object_too_large, "Object payload exceeds size limit"});
     }
@@ -43,7 +39,7 @@ std::string encodeRecord(const StoredObject &record)
 {
     std::string text;
     text.reserve(record.json.size() + 160);
-    text += "{\"schema_version\":1,\"id\":\"";
+    text += "{\"envelope_version\":1,\"id\":\"";
     text += record.info.id.value();
     text += "\",\"revision\":\"";
     text += record.info.revision;
@@ -68,7 +64,7 @@ Result<StoredObject> decodeRecord(std::string_view text, const ObjectId &request
     std::string_view payload;
     for (const detail::JsonMember &member : members.value()) {
         std::string_view *destination = nullptr;
-        if (member.key == "schema_version") destination = &schema;
+        if (member.key == "envelope_version") destination = &schema;
         else if (member.key == "id") destination = &id;
         else if (member.key == "revision") destination = &revision;
         else if (member.key == "payload") destination = &payload;
@@ -104,7 +100,7 @@ Result<StoredObject> decodeRecord(std::string_view text, const ObjectId &request
     if (payload.front() != '{') {
         return Result<StoredObject>::failure({ErrorCode::corrupt_object, "Stored object payload must be a JSON object"});
     }
-    return Result<StoredObject>::success({{parsed_id.value(), 1, std::string(revision)}, std::string(payload)});
+    return Result<StoredObject>::success({{parsed_id.value(), std::string(revision)}, std::string(payload)});
 }
 
 Result<std::string> newRevision()
@@ -125,9 +121,9 @@ Result<StoredObject> loadRecord(const detail::CollectionSession &session, const 
     return decodeRecord(text.value(), id);
 }
 
-// One locked pass. Backend-level failures abort; per-entry failures are
-// reported as UnreadableObject so one damaged entry cannot hide every other
-// record (and the damaged one stays visible for repair).
+// Backend-level failures abort; per-entry failures are reported as
+// UnreadableObject so one damaged entry cannot hide every other record (and
+// the damaged one stays visible for repair).
 Result<ObjectSnapshot> enumerate(const detail::CollectionSession &session, bool keep_payload)
 {
     Result<std::vector<std::string>> names = session.entryNames();
@@ -164,44 +160,99 @@ Result<std::string> checkedCollectionName(std::string_view collection)
     if (!checked) return Result<std::string>::failure({ErrorCode::invalid_collection, "Invalid collection name"});
     return Result<std::string>::success(checked.value().value());
 }
+
+detail::BackendMode backendMode(AccessMode mode)
+{
+    return mode == AccessMode::read_only ? detail::BackendMode::read_only : detail::BackendMode::read_write;
+}
+
+// Runs one operation in its own short owner session.
+template<typename T, typename Operation>
+Result<T> withSession(const std::shared_ptr<const detail::OwnerBackend> &backend, Operation operation)
+{
+    Result<std::unique_ptr<detail::OwnerSessionImpl>> session = backend->lock();
+    if (!session) return Result<T>::failure(session.error());
+    return operation(*session.value());
+}
 } // namespace
 
-Result<ObjectCollection> ObjectCollection::fromBackend(
-    std::shared_ptr<const detail::CollectionBackend> backend, std::string name)
+// ---------------------------------------------------------------- OwnerSession
+
+OwnerSession::OwnerSession(std::shared_ptr<const detail::OwnerBackend> backend,
+                           std::unique_ptr<detail::OwnerSessionImpl> impl)
+    : backend_(std::move(backend)), impl_(std::move(impl)) {}
+OwnerSession::OwnerSession(OwnerSession &&other) noexcept = default;
+OwnerSession &OwnerSession::operator=(OwnerSession &&other) noexcept = default;
+OwnerSession::~OwnerSession() = default;
+
+// ------------------------------------------------------------------ OwnerStore
+
+Result<OwnerStore> OwnerStore::open(const ConfigRoot &root, OpenOptions options)
 {
-    // Opening verifies the storage location and removes crash residue now,
-    // so configuration problems surface at open() rather than on first use.
-    Result<std::unique_ptr<detail::CollectionSession>> session = backend->lock(true);
-    if (!session) return Result<ObjectCollection>::failure(session.error());
-    return Result<ObjectCollection>::success(ObjectCollection(std::move(backend), std::move(name)));
+    Result<std::shared_ptr<const detail::OwnerBackend>> backend =
+        detail::openNativeBackend(root.path(), backendMode(options.mode), options.lock_timeout);
+    if (!backend) return Result<OwnerStore>::failure(backend.error());
+    // Verify the owner root (and, read_write, create it and its lock) now.
+    Result<std::unique_ptr<detail::OwnerSessionImpl>> session = backend.value()->lock();
+    if (!session) return Result<OwnerStore>::failure(session.error());
+    return Result<OwnerStore>::success(OwnerStore(std::move(backend.value())));
 }
 
-Result<ObjectCollection> ObjectCollection::open(const ConfigRoot &root, std::string_view collection,
-                                                std::chrono::milliseconds lock_timeout)
+Result<OwnerStore> OwnerStore::openInMemory(const MemoryStorage &storage, OpenOptions options)
 {
-    Result<std::string> name = checkedCollectionName(collection);
-    if (!name) return Result<ObjectCollection>::failure(name.error());
-    Result<std::shared_ptr<const detail::CollectionBackend>> backend =
-        detail::openNativeBackend(root.path(), name.value(), lock_timeout);
-    if (!backend) return Result<ObjectCollection>::failure(backend.error());
-    return ObjectCollection::fromBackend(std::move(backend.value()), std::move(name.value()));
+    return Result<OwnerStore>::success(
+        OwnerStore(detail::openMemoryBackend(storage.state_, backendMode(options.mode), options.lock_timeout)));
 }
 
-Result<ObjectCollection> ObjectCollection::openInMemory(const MemoryStorage &storage, std::string_view collection,
-                                                        std::chrono::milliseconds lock_timeout)
+Result<ObjectCollection> OwnerStore::collection(std::string_view name) const
 {
-    Result<std::string> name = checkedCollectionName(collection);
-    if (!name) return Result<ObjectCollection>::failure(name.error());
-    // Build the backend first: argument evaluation order is unspecified, so
-    // name must not be moved in the same call expression that reads it.
-    std::shared_ptr<const detail::CollectionBackend> backend =
-        detail::openMemoryBackend(storage.state_, name.value(), lock_timeout);
-    return ObjectCollection::fromBackend(std::move(backend), std::move(name.value()));
+    Result<std::string> checked = checkedCollectionName(name);
+    if (!checked) return Result<ObjectCollection>::failure(checked.error());
+    Result<bool> verified = withSession<bool>(this->backend_, [&checked](detail::OwnerSessionImpl &session) {
+        Result<std::unique_ptr<detail::CollectionSession>> collection = session.collection(checked.value(), true);
+        if (!collection) return Result<bool>::failure(collection.error());
+        return Result<bool>::success(true);
+    });
+    if (!verified) return Result<ObjectCollection>::failure(verified.error());
+    return Result<ObjectCollection>::success(ObjectCollection(this->backend_, std::move(checked.value())));
 }
 
-Result<ObjectListing> ObjectCollection::list() const
+Result<OwnerSession> OwnerStore::lock() const
 {
-    Result<ObjectSnapshot> snapshot = this->readAll();
+    Result<std::unique_ptr<detail::OwnerSessionImpl>> session = this->backend_->lock();
+    if (!session) return Result<OwnerSession>::failure(session.error());
+    return Result<OwnerSession>::success(OwnerSession(this->backend_, std::move(session.value())));
+}
+
+AccessMode OwnerStore::mode() const noexcept
+{
+    return this->backend_->mode() == detail::BackendMode::read_only ? AccessMode::read_only : AccessMode::read_write;
+}
+
+// ------------------------------------------------------------ ObjectCollection
+//
+// Every operation is implemented once against a held OwnerSessionImpl; the
+// session-less overloads wrap it in a short session of their own.
+
+namespace {
+Result<std::unique_ptr<detail::CollectionSession>> openCollection(detail::OwnerSessionImpl &session,
+                                                        const std::string &name, bool recover)
+{
+    return session.collection(name, recover);
+}
+
+Result<ObjectSnapshot> readAllIn(detail::OwnerSessionImpl &owner, const std::string &name)
+{
+    Result<std::unique_ptr<detail::CollectionSession>> session = openCollection(owner, name, false);
+    if (!session) return Result<ObjectSnapshot>::failure(session.error());
+    return enumerate(*session.value(), true);
+}
+
+Result<ObjectListing> listIn(detail::OwnerSessionImpl &owner, const std::string &name)
+{
+    Result<std::unique_ptr<detail::CollectionSession>> session = openCollection(owner, name, false);
+    if (!session) return Result<ObjectListing>::failure(session.error());
+    Result<ObjectSnapshot> snapshot = enumerate(*session.value(), false);
     if (!snapshot) return Result<ObjectListing>::failure(snapshot.error());
     ObjectListing listing;
     listing.objects.reserve(snapshot.value().objects.size());
@@ -210,46 +261,38 @@ Result<ObjectListing> ObjectCollection::list() const
     return Result<ObjectListing>::success(std::move(listing));
 }
 
-Result<ObjectSnapshot> ObjectCollection::readAll() const
+Result<StoredObject> readIn(detail::OwnerSessionImpl &owner, const std::string &name, const ObjectId &id)
 {
-    Result<std::unique_ptr<detail::CollectionSession>> session = this->backend_->lock(false);
-    if (!session) return Result<ObjectSnapshot>::failure(session.error());
-    return enumerate(*session.value(), true);
-}
-
-Result<StoredObject> ObjectCollection::read(const ObjectId &id) const
-{
-    Result<std::unique_ptr<detail::CollectionSession>> session = this->backend_->lock(false);
+    Result<std::unique_ptr<detail::CollectionSession>> session = openCollection(owner, name, false);
     if (!session) return Result<StoredObject>::failure(session.error());
     return loadRecord(*session.value(), id);
 }
 
-Result<StoredObject> ObjectCollection::create(std::string_view json, std::uint32_t schema_version) const
+Result<StoredObject> createIn(detail::OwnerSessionImpl &owner, const std::string &name, std::string_view json)
 {
-    Result<bool> checked = validatePayload(json, schema_version);
+    Result<bool> checked = validatePayload(json);
     if (!checked) return Result<StoredObject>::failure(checked.error());
     Result<ObjectId> id = ObjectId::generate();
     if (!id) return Result<StoredObject>::failure(id.error());
     Result<std::string> revision = newRevision();
     if (!revision) return Result<StoredObject>::failure(revision.error());
-    StoredObject record{{id.value(), schema_version, revision.value()}, std::string(json)};
-    Result<std::unique_ptr<detail::CollectionSession>> session = this->backend_->lock(true);
+    StoredObject record{{id.value(), revision.value()}, std::string(json)};
+    Result<std::unique_ptr<detail::CollectionSession>> session = openCollection(owner, name, true);
     if (!session) return Result<StoredObject>::failure(session.error());
     Result<bool> stored = session.value()->writeEntry(record.info.id, encodeRecord(record), true);
     if (!stored) return Result<StoredObject>::failure(stored.error());
     return Result<StoredObject>::success(std::move(record));
 }
 
-Result<StoredObject> ObjectCollection::update(const ObjectId &id, std::string_view json,
-                                                std::string_view expected_revision,
-                                                std::uint32_t schema_version) const
+Result<StoredObject> updateIn(detail::OwnerSessionImpl &owner, const std::string &name, const ObjectId &id,
+                              std::string_view json, std::string_view expected_revision)
 {
-    Result<bool> checked = validatePayload(json, schema_version);
+    Result<bool> checked = validatePayload(json);
     if (!checked) return Result<StoredObject>::failure(checked.error());
     if (!validRevision(expected_revision)) {
         return Result<StoredObject>::failure({ErrorCode::conflict, "A valid expected revision is required"});
     }
-    Result<std::unique_ptr<detail::CollectionSession>> session = this->backend_->lock(true);
+    Result<std::unique_ptr<detail::CollectionSession>> session = openCollection(owner, name, true);
     if (!session) return Result<StoredObject>::failure(session.error());
     Result<StoredObject> previous = loadRecord(*session.value(), id);
     if (!previous) return Result<StoredObject>::failure(previous.error());
@@ -258,18 +301,19 @@ Result<StoredObject> ObjectCollection::update(const ObjectId &id, std::string_vi
     }
     Result<std::string> revision = newRevision();
     if (!revision) return Result<StoredObject>::failure(revision.error());
-    StoredObject updated{{id, schema_version, revision.value()}, std::string(json)};
+    StoredObject updated{{id, revision.value()}, std::string(json)};
     Result<bool> stored = session.value()->writeEntry(id, encodeRecord(updated), false);
     if (!stored) return Result<StoredObject>::failure(stored.error());
     return Result<StoredObject>::success(std::move(updated));
 }
 
-Result<bool> ObjectCollection::erase(const ObjectId &id, std::string_view expected_revision) const
+Result<bool> eraseIn(detail::OwnerSessionImpl &owner, const std::string &name, const ObjectId &id,
+                     std::string_view expected_revision)
 {
     if (!validRevision(expected_revision)) {
         return Result<bool>::failure({ErrorCode::conflict, "A valid expected revision is required"});
     }
-    Result<std::unique_ptr<detail::CollectionSession>> session = this->backend_->lock(true);
+    Result<std::unique_ptr<detail::CollectionSession>> session = openCollection(owner, name, true);
     if (!session) return Result<bool>::failure(session.error());
     Result<StoredObject> previous = loadRecord(*session.value(), id);
     if (!previous) return Result<bool>::failure(previous.error());
@@ -279,18 +323,118 @@ Result<bool> ObjectCollection::erase(const ObjectId &id, std::string_view expect
     return session.value()->removeEntry(id);
 }
 
-Result<bool> ObjectCollection::eraseCorrupt(const ObjectId &id) const
+Result<bool> eraseCorruptIn(detail::OwnerSessionImpl &owner, const std::string &name, const ObjectId &id)
 {
-    Result<std::unique_ptr<detail::CollectionSession>> session = this->backend_->lock(true);
+    Result<std::unique_ptr<detail::CollectionSession>> session = openCollection(owner, name, true);
     if (!session) return Result<bool>::failure(session.error());
-    // Re-check under the lock: another instance may have repaired or replaced
-    // the record since the caller saw it in an UnreadableObject listing.
+    // Re-check inside the session: another instance may have repaired or
+    // replaced the record since the caller saw it in an unreadable listing.
     Result<StoredObject> current = loadRecord(*session.value(), id);
     if (current) {
         return Result<bool>::failure({ErrorCode::conflict, "Object is readable; erase it with its revision"});
     }
     if (current.error().code != ErrorCode::corrupt_object) return Result<bool>::failure(current.error());
     return session.value()->removeEntry(id);
+}
+
+Error mismatch()
+{
+    return {ErrorCode::session_mismatch, "Session belongs to a different configuration store"};
+}
+} // namespace
+
+Result<ObjectListing> ObjectCollection::list(const OwnerSession &session) const
+{
+    if (session.backend_ != this->backend_ || !session.impl_) return Result<ObjectListing>::failure(mismatch());
+    return listIn(*session.impl_, this->name_);
+}
+
+Result<ObjectSnapshot> ObjectCollection::readAll(const OwnerSession &session) const
+{
+    if (session.backend_ != this->backend_ || !session.impl_) return Result<ObjectSnapshot>::failure(mismatch());
+    return readAllIn(*session.impl_, this->name_);
+}
+
+Result<StoredObject> ObjectCollection::read(const OwnerSession &session, const ObjectId &id) const
+{
+    if (session.backend_ != this->backend_ || !session.impl_) return Result<StoredObject>::failure(mismatch());
+    return readIn(*session.impl_, this->name_, id);
+}
+
+Result<StoredObject> ObjectCollection::create(const OwnerSession &session, std::string_view json) const
+{
+    if (session.backend_ != this->backend_ || !session.impl_) return Result<StoredObject>::failure(mismatch());
+    return createIn(*session.impl_, this->name_, json);
+}
+
+Result<StoredObject> ObjectCollection::update(const OwnerSession &session, const ObjectId &id,
+                                                std::string_view json, std::string_view expected_revision) const
+{
+    if (session.backend_ != this->backend_ || !session.impl_) return Result<StoredObject>::failure(mismatch());
+    return updateIn(*session.impl_, this->name_, id, json, expected_revision);
+}
+
+Result<bool> ObjectCollection::erase(const OwnerSession &session, const ObjectId &id,
+                                     std::string_view expected_revision) const
+{
+    if (session.backend_ != this->backend_ || !session.impl_) return Result<bool>::failure(mismatch());
+    return eraseIn(*session.impl_, this->name_, id, expected_revision);
+}
+
+Result<bool> ObjectCollection::eraseCorrupt(const OwnerSession &session, const ObjectId &id) const
+{
+    if (session.backend_ != this->backend_ || !session.impl_) return Result<bool>::failure(mismatch());
+    return eraseCorruptIn(*session.impl_, this->name_, id);
+}
+
+Result<ObjectListing> ObjectCollection::list() const
+{
+    return withSession<ObjectListing>(this->backend_, [this](detail::OwnerSessionImpl &owner) {
+        return listIn(owner, this->name_);
+    });
+}
+
+Result<ObjectSnapshot> ObjectCollection::readAll() const
+{
+    return withSession<ObjectSnapshot>(this->backend_, [this](detail::OwnerSessionImpl &owner) {
+        return readAllIn(owner, this->name_);
+    });
+}
+
+Result<StoredObject> ObjectCollection::read(const ObjectId &id) const
+{
+    return withSession<StoredObject>(this->backend_, [this, &id](detail::OwnerSessionImpl &owner) {
+        return readIn(owner, this->name_, id);
+    });
+}
+
+Result<StoredObject> ObjectCollection::create(std::string_view json) const
+{
+    return withSession<StoredObject>(this->backend_, [this, json](detail::OwnerSessionImpl &owner) {
+        return createIn(owner, this->name_, json);
+    });
+}
+
+Result<StoredObject> ObjectCollection::update(const ObjectId &id, std::string_view json,
+                                                std::string_view expected_revision) const
+{
+    return withSession<StoredObject>(this->backend_, [this, &id, json, expected_revision](detail::OwnerSessionImpl &owner) {
+        return updateIn(owner, this->name_, id, json, expected_revision);
+    });
+}
+
+Result<bool> ObjectCollection::erase(const ObjectId &id, std::string_view expected_revision) const
+{
+    return withSession<bool>(this->backend_, [this, &id, expected_revision](detail::OwnerSessionImpl &owner) {
+        return eraseIn(owner, this->name_, id, expected_revision);
+    });
+}
+
+Result<bool> ObjectCollection::eraseCorrupt(const ObjectId &id) const
+{
+    return withSession<bool>(this->backend_, [this, &id](detail::OwnerSessionImpl &owner) {
+        return eraseCorruptIn(owner, this->name_, id);
+    });
 }
 
 } // namespace aowis::config

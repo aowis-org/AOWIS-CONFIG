@@ -1,8 +1,17 @@
 // Native POSIX storage backend (Linux, Android, macOS, BSD). Selected in
 // CMakeLists.txt for every non-Windows, non-Emscripten build. Implements the
-// contract in storage_backend.h with descriptor-based traversal, private
-// permissions, a time-limited flock(2) collection lock, fsynced temporary
-// files and atomic link/rename publication.
+// contract in storage_backend.h with descriptor-based traversal, a
+// time-limited flock(2) lock on <owner>/.lock covering all collections,
+// fsynced temporary files and atomic link/rename publication.
+//
+// Two access policies:
+//  - read_write: the owner directory and everything below must belong to the
+//    effective user and be private (0700 directories, 0600 files). Missing
+//    directories are created.
+//  - read_only: nothing is created, locked or written. Entries may belong to
+//    the effective user or to root and may be group/other-readable (e.g.
+//    0640 root:aowis under /etc), but must never be group/other-writable.
+// In both modes nothing at or below the owner directory may be a symlink.
 #include "storage_backend.h"
 
 #include <algorithm>
@@ -55,17 +64,37 @@ Error operatingError(std::string_view operation, int error)
     return {code, std::string(operation) + " failed (errno " + std::to_string(error) + ")"};
 }
 
-Result<FileDescriptor> directoryAt(int parent, const std::string &name, bool restricted)
+
+// Ownership/permission policy for everything at or below the owner root.
+bool acceptable(const struct stat &status, BackendMode mode, bool directory)
 {
-    const int created = ::mkdirat(parent, name.c_str(), 0700);
-    if (created < 0 && errno != EEXIST) {
-        return Result<FileDescriptor>::failure(operatingError("Create configuration directory", errno));
+    if (mode == BackendMode::read_write) {
+        if (status.st_uid != ::geteuid() || (status.st_mode & 0077) != 0) return false;
+        return !directory || (status.st_mode & S_IWUSR) != 0;
     }
-    if (created == 0 && ::fsync(parent) < 0) {
-        return Result<FileDescriptor>::failure(operatingError("Sync parent after directory creation", errno));
+    // Administrator-managed roots: root-owned is fine, readable by the
+    // service group is fine, writable by anyone but the owner never is.
+    if (status.st_uid != ::geteuid() && status.st_uid != 0) return false;
+    return (status.st_mode & 0022) == 0;
+}
+
+// Opens (read_write: creates first) a directory below the owner boundary.
+// ENOENT in read_only mode is reported as not_found so callers can treat a
+// missing collection as empty.
+Result<FileDescriptor> directoryAt(int parent, const std::string &name, BackendMode mode)
+{
+    if (mode == BackendMode::read_write) {
+        const int created = ::mkdirat(parent, name.c_str(), 0700);
+        if (created < 0 && errno != EEXIST) {
+            return Result<FileDescriptor>::failure(operatingError("Create configuration directory", errno));
+        }
+        if (created == 0 && ::fsync(parent) < 0) {
+            return Result<FileDescriptor>::failure(operatingError("Sync parent after directory creation", errno));
+        }
     }
     FileDescriptor directory(::openat(parent, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
     if (!directory.valid()) {
+        if (errno == ENOENT) return Result<FileDescriptor>::failure({ErrorCode::not_found, "Configuration directory does not exist"});
         if (errno == ELOOP || errno == ENOTDIR) {
             return Result<FileDescriptor>::failure(
                 {ErrorCode::unsafe_path, "Configuration owner or collection directory is a symlink or not a directory"});
@@ -76,16 +105,16 @@ Result<FileDescriptor> directoryAt(int parent, const std::string &name, bool res
     if (::fstat(directory.get(), &status) < 0) {
         return Result<FileDescriptor>::failure(operatingError("Inspect configuration directory", errno));
     }
-    if (restricted && (status.st_uid != ::geteuid() || (status.st_mode & 0077) != 0
-                       || (status.st_mode & S_IWUSR) == 0)) {
-        return Result<FileDescriptor>::failure(
-            {ErrorCode::permission_denied, "Configuration owner directory must belong to this user and be private (0700)"});
+    if (!acceptable(status, mode, true)) {
+        return Result<FileDescriptor>::failure({ErrorCode::permission_denied,
+            mode == BackendMode::read_write
+                ? "Configuration directory must belong to this user and be private (0700)"
+                : "Read-only configuration directory must belong to this user or root and not be group/other-writable"});
     }
     return Result<FileDescriptor>::success(std::move(directory));
 }
 
-Result<FileDescriptor> collectionDirectory(const std::filesystem::path &root_path,
-                                          const std::string &collection_name)
+Result<FileDescriptor> ownerDirectory(const std::filesystem::path &root_path, BackendMode mode)
 {
     FileDescriptor current(::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (!current.valid()) return Result<FileDescriptor>::failure(operatingError("Open filesystem root", errno));
@@ -104,28 +133,32 @@ Result<FileDescriptor> collectionDirectory(const std::filesystem::path &root_pat
     // Ancestors of the owner directory belong to the user's or system's
     // filesystem layout, not to AOWIS: /home -> /var/home (Silverblue),
     // /var -> /private/var (macOS) or a dotfile-managed ~/.config symlink are
-    // legitimate. They are followed and created on demand, but not
-    // permission-checked. The security boundary is the owner directory: it
-    // and everything below it are opened with O_NOFOLLOW and must be owned
-    // by the effective user with mode 0700, so a redirected ancestor can only
-    // lead to a directory that is already private to this user.
+    // legitimate. They are followed (and in read_write mode created), but not
+    // permission-checked. The owner directory is the security boundary.
     for (std::size_t index = 0; index + 1 < segments.size(); ++index) {
-        const int created = ::mkdirat(current.get(), segments[index].c_str(), 0700);
-        if (created < 0 && errno != EEXIST) {
-            return Result<FileDescriptor>::failure(operatingError("Create configuration ancestor directory", errno));
-        }
-        if (created == 0 && ::fsync(current.get()) < 0) {
-            return Result<FileDescriptor>::failure(operatingError("Sync parent after directory creation", errno));
+        if (mode == BackendMode::read_write) {
+            const int created = ::mkdirat(current.get(), segments[index].c_str(), 0700);
+            if (created < 0 && errno != EEXIST) {
+                return Result<FileDescriptor>::failure(operatingError("Create configuration ancestor directory", errno));
+            }
+            if (created == 0 && ::fsync(current.get()) < 0) {
+                return Result<FileDescriptor>::failure(operatingError("Sync parent after directory creation", errno));
+            }
         }
         FileDescriptor next(::openat(current.get(), segments[index].c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
         if (!next.valid()) {
+            if (errno == ENOENT) {
+                return Result<FileDescriptor>::failure({ErrorCode::not_found, "Configuration root does not exist"});
+            }
             return Result<FileDescriptor>::failure(operatingError("Open configuration ancestor directory", errno));
         }
         current = std::move(next);
     }
-    Result<FileDescriptor> owner = directoryAt(current.get(), segments.back(), true);
-    if (!owner) return owner;
-    return directoryAt(owner.value().get(), collection_name, true);
+    Result<FileDescriptor> owner = directoryAt(current.get(), segments.back(), mode);
+    if (!owner && owner.error().code == ErrorCode::not_found) {
+        return Result<FileDescriptor>::failure({ErrorCode::not_found, "Configuration root does not exist"});
+    }
+    return owner;
 }
 
 bool temporaryName(std::string_view name)
@@ -178,56 +211,8 @@ Result<bool> removeOrphanTemps(int directory)
     return Result<bool>::success(removed);
 }
 
-class LockedDirectory final {
-public:
-    // recover=true removes orphan temporaries left by a crashed writer. Only
-    // mutating operations and open() need it: readers skip ".tmp-*" entries,
-    // so a leftover temporary is harmless until the next write.
-    static Result<LockedDirectory> acquire(const std::filesystem::path &root, const std::string &collection,
-                                   std::chrono::milliseconds timeout, bool recover)
-    {
-        Result<FileDescriptor> directory = collectionDirectory(root, collection);
-        if (!directory) return Result<LockedDirectory>::failure(directory.error());
-        FileDescriptor lock(::openat(directory.value().get(), ".lock",
-                                     O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0600));
-        if (!lock.valid()) return Result<LockedDirectory>::failure(operatingError("Open collection lock", errno));
-        struct stat status{};
-        if (::fstat(lock.get(), &status) < 0 || !S_ISREG(status.st_mode)
-            || status.st_uid != ::geteuid() || (status.st_mode & 0077) != 0) {
-            return Result<LockedDirectory>::failure({ErrorCode::unsafe_path, "Unsafe collection lock file"});
-        }
-        // Never block indefinitely: a hung second instance or a stalled
-        // network filesystem would otherwise freeze the caller's thread.
-        const std::chrono::steady_clock::time_point deadline =
-            std::chrono::steady_clock::now() + std::max(timeout, std::chrono::milliseconds(0));
-        while (::flock(lock.get(), LOCK_EX | LOCK_NB) < 0) {
-            if (errno == EINTR) continue;
-            if (errno != EWOULDBLOCK) {
-                return Result<LockedDirectory>::failure(operatingError("Acquire collection lock", errno));
-            }
-            if (std::chrono::steady_clock::now() >= deadline) {
-                return Result<LockedDirectory>::failure(
-                    {ErrorCode::lock_timeout, "Collection is locked by another process; retry later"});
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        if (recover) {
-            Result<bool> recovered = removeOrphanTemps(directory.value().get());
-            if (!recovered) return Result<LockedDirectory>::failure(recovered.error());
-        }
-        return Result<LockedDirectory>::success(LockedDirectory(std::move(directory.value()), std::move(lock)));
-    }
 
-    [[nodiscard]] int directory() const noexcept { return this->directory_.get(); }
-
-private:
-    LockedDirectory(FileDescriptor directory, FileDescriptor lock)
-        : directory_(std::move(directory)), lock_(std::move(lock)) {}
-    FileDescriptor directory_;
-    FileDescriptor lock_;
-};
-
-Result<std::string> readFile(int directory, const ObjectId &id)
+Result<std::string> readFile(int directory, const ObjectId &id, BackendMode mode)
 {
     const std::string filename = id.value() + ".json";
     FileDescriptor file(::openat(directory, filename.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK));
@@ -238,8 +223,11 @@ Result<std::string> readFile(int directory, const ObjectId &id)
     }
     struct stat status{};
     if (::fstat(file.get(), &status) < 0) return Result<std::string>::failure(operatingError("Inspect object", errno));
-    if (!S_ISREG(status.st_mode) || status.st_uid != ::geteuid() || (status.st_mode & 0077) != 0) {
-        return Result<std::string>::failure({ErrorCode::unsafe_path, "Object file must be regular, owned and private (0600)"});
+    if (!S_ISREG(status.st_mode) || !acceptable(status, mode, false)) {
+        return Result<std::string>::failure({ErrorCode::unsafe_path,
+            mode == BackendMode::read_write
+                ? "Object file must be regular, owned and private (0600)"
+                : "Read-only object file must be regular, owned by this user or root and not group/other-writable"});
     }
     if (status.st_size < 0 || static_cast<std::uint64_t>(status.st_size) > max_record_bytes) {
         return Result<std::string>::failure({ErrorCode::object_too_large, "Stored object exceeds size limit"});
@@ -325,13 +313,24 @@ Result<bool> storeRecord(int directory, const ObjectId &id, std::string_view enc
     return Result<bool>::success(true);
 }
 
-class PosixSession final : public CollectionSession {
+
+Result<bool> readOnlyWrite()
+{
+    return Result<bool>::failure({ErrorCode::permission_denied, "Configuration store is opened read-only"});
+}
+
+// One collection inside a held owner session. directory_ is invalid for a
+// collection that does not exist in read-only mode: it then reads as empty.
+class PosixCollection final : public CollectionSession {
 public:
-    explicit PosixSession(LockedDirectory locked) : locked_(std::move(locked)) {}
+    PosixCollection(FileDescriptor directory, BackendMode mode)
+        : directory_(std::move(directory)), mode_(mode) {}
 
     [[nodiscard]] Result<std::vector<std::string>> entryNames() const override
     {
-        const int copied = ::openat(this->locked_.directory(), ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        std::vector<std::string> names;
+        if (!this->directory_.valid()) return Result<std::vector<std::string>>::success(std::move(names));
+        const int copied = ::openat(this->directory_.get(), ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         if (copied < 0) return Result<std::vector<std::string>>::failure(operatingError("Duplicate collection directory", errno));
         DIR *stream = ::fdopendir(copied);
         if (stream == nullptr) {
@@ -339,13 +338,12 @@ public:
             ::close(copied);
             return Result<std::vector<std::string>>::failure(operatingError("Enumerate collection", failure));
         }
-        std::vector<std::string> names;
         while (true) {
             errno = 0;
             const dirent *entry = ::readdir(stream);
             if (entry == nullptr) break;
             std::string name(entry->d_name);
-            // ".", "..", ".lock" and ".tmp-*" never end in ".json".
+            // ".", ".." and ".tmp-*" never end in ".json".
             if (name.ends_with(".json")) names.push_back(std::move(name));
         }
         const int iteration_error = errno;
@@ -358,60 +356,126 @@ public:
 
     [[nodiscard]] Result<std::string> readEntry(const ObjectId &id) const override
     {
-        return readFile(this->locked_.directory(), id);
+        if (!this->directory_.valid()) {
+            return Result<std::string>::failure({ErrorCode::not_found, "Object does not exist"});
+        }
+        return readFile(this->directory_.get(), id, this->mode_);
     }
 
     [[nodiscard]] Result<bool> writeEntry(const ObjectId &id, std::string_view bytes, bool create_only) override
     {
-        return storeRecord(this->locked_.directory(), id, bytes, create_only);
+        if (this->mode_ == BackendMode::read_only) return readOnlyWrite();
+        return storeRecord(this->directory_.get(), id, bytes, create_only);
     }
 
     [[nodiscard]] Result<bool> removeEntry(const ObjectId &id) override
     {
+        if (this->mode_ == BackendMode::read_only) return readOnlyWrite();
         const std::string filename = id.value() + ".json";
-        if (::unlinkat(this->locked_.directory(), filename.c_str(), 0) < 0) {
+        if (::unlinkat(this->directory_.get(), filename.c_str(), 0) < 0) {
             if (errno == ENOENT) return Result<bool>::failure({ErrorCode::not_found, "Object does not exist"});
             return Result<bool>::failure(operatingError("Delete object", errno));
         }
-        if (::fsync(this->locked_.directory()) < 0) {
+        if (::fsync(this->directory_.get()) < 0) {
             return Result<bool>::failure(operatingError("Sync collection after deletion", errno));
         }
         return Result<bool>::success(true);
     }
 
 private:
-    LockedDirectory locked_;
+    FileDescriptor directory_;
+    BackendMode mode_;
 };
 
-class PosixBackend final : public CollectionBackend {
+class PosixOwnerSession final : public OwnerSessionImpl {
 public:
-    PosixBackend(std::filesystem::path owner_root, std::string collection, std::chrono::milliseconds lock_timeout)
-        : owner_root_(std::move(owner_root)), collection_(std::move(collection)), lock_timeout_(lock_timeout) {}
+    PosixOwnerSession(FileDescriptor owner, FileDescriptor lock, BackendMode mode)
+        : owner_(std::move(owner)), lock_(std::move(lock)), mode_(mode) {}
 
-    [[nodiscard]] Result<std::unique_ptr<CollectionSession>> lock(bool recover) const override
+    [[nodiscard]] Result<std::unique_ptr<CollectionSession>> collection(const std::string &name, bool recover) override
     {
-        // The path is re-walked and re-verified for every session, so a
-        // directory swapped between calls is detected rather than trusted.
-        Result<LockedDirectory> locked = LockedDirectory::acquire(
-            this->owner_root_, this->collection_, this->lock_timeout_, recover);
-        if (!locked) return Result<std::unique_ptr<CollectionSession>>::failure(locked.error());
+        Result<FileDescriptor> directory = directoryAt(this->owner_.get(), name, this->mode_);
+        if (!directory) {
+            if (this->mode_ == BackendMode::read_only && directory.error().code == ErrorCode::not_found) {
+                return Result<std::unique_ptr<CollectionSession>>::success(
+                    std::make_unique<PosixCollection>(FileDescriptor(), this->mode_));
+            }
+            return Result<std::unique_ptr<CollectionSession>>::failure(directory.error());
+        }
+        if (recover && this->mode_ == BackendMode::read_write) {
+            Result<bool> recovered = removeOrphanTemps(directory.value().get());
+            if (!recovered) return Result<std::unique_ptr<CollectionSession>>::failure(recovered.error());
+        }
         return Result<std::unique_ptr<CollectionSession>>::success(
-            std::make_unique<PosixSession>(std::move(locked.value())));
+            std::make_unique<PosixCollection>(std::move(directory.value()), this->mode_));
     }
 
 private:
+    FileDescriptor owner_;
+    FileDescriptor lock_; // Holds flock(LOCK_EX) in read_write mode; invalid in read_only mode.
+    BackendMode mode_;
+};
+
+Result<FileDescriptor> acquireOwnerLock(int owner, std::chrono::milliseconds timeout)
+{
+    FileDescriptor lock(::openat(owner, ".lock", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0600));
+    if (!lock.valid()) return Result<FileDescriptor>::failure(operatingError("Open owner lock", errno));
+    struct stat status{};
+    if (::fstat(lock.get(), &status) < 0 || !S_ISREG(status.st_mode)
+        || status.st_uid != ::geteuid() || (status.st_mode & 0077) != 0) {
+        return Result<FileDescriptor>::failure({ErrorCode::unsafe_path, "Unsafe owner lock file"});
+    }
+    // Never block indefinitely: a hung second instance or a stalled network
+    // filesystem would otherwise freeze the caller's thread.
+    const std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::now() + std::max(timeout, std::chrono::milliseconds(0));
+    while (::flock(lock.get(), LOCK_EX | LOCK_NB) < 0) {
+        if (errno == EINTR) continue;
+        if (errno != EWOULDBLOCK) return Result<FileDescriptor>::failure(operatingError("Acquire owner lock", errno));
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return Result<FileDescriptor>::failure(
+                {ErrorCode::lock_timeout, "Configuration is locked by another process; retry later"});
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return Result<FileDescriptor>::success(std::move(lock));
+}
+
+class PosixBackend final : public OwnerBackend {
+public:
+    PosixBackend(std::filesystem::path owner_root, BackendMode mode, std::chrono::milliseconds lock_timeout)
+        : owner_root_(std::move(owner_root)), mode_(mode), lock_timeout_(lock_timeout) {}
+
+    [[nodiscard]] Result<std::unique_ptr<OwnerSessionImpl>> lock() const override
+    {
+        // The path is re-walked and re-verified for every session, so a
+        // directory swapped between calls is detected rather than trusted.
+        Result<FileDescriptor> owner = ownerDirectory(this->owner_root_, this->mode_);
+        if (!owner) return Result<std::unique_ptr<OwnerSessionImpl>>::failure(owner.error());
+        FileDescriptor held;
+        if (this->mode_ == BackendMode::read_write) {
+            Result<FileDescriptor> locked = acquireOwnerLock(owner.value().get(), this->lock_timeout_);
+            if (!locked) return Result<std::unique_ptr<OwnerSessionImpl>>::failure(locked.error());
+            held = std::move(locked.value());
+        }
+        return Result<std::unique_ptr<OwnerSessionImpl>>::success(
+            std::make_unique<PosixOwnerSession>(std::move(owner.value()), std::move(held), this->mode_));
+    }
+
+    [[nodiscard]] BackendMode mode() const noexcept override { return this->mode_; }
+
+private:
     std::filesystem::path owner_root_;
-    std::string collection_;
+    BackendMode mode_;
     std::chrono::milliseconds lock_timeout_;
 };
 } // namespace
 
-Result<std::shared_ptr<const CollectionBackend>> openNativeBackend(
-    const std::filesystem::path &owner_root, const std::string &collection,
-    std::chrono::milliseconds lock_timeout)
+Result<std::shared_ptr<const OwnerBackend>> openNativeBackend(
+    const std::filesystem::path &owner_root, BackendMode mode, std::chrono::milliseconds lock_timeout)
 {
-    return Result<std::shared_ptr<const CollectionBackend>>::success(
-        std::make_shared<const PosixBackend>(owner_root, collection, lock_timeout));
+    return Result<std::shared_ptr<const OwnerBackend>>::success(
+        std::make_shared<const PosixBackend>(owner_root, mode, lock_timeout));
 }
 
 } // namespace aowis::config::detail

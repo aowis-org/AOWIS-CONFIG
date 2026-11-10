@@ -25,6 +25,7 @@ enum class ErrorCode {
     profile_in_use,
     reference_unavailable,
     lock_timeout,
+    session_mismatch,
 };
 
 struct Error {

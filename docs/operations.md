@@ -1,115 +1,110 @@
-# Operations, portability and secret safety
+# Operations, security and verification
 
-This document describes the **native POSIX implementation in v0.5.0**. It is
-not a deployment guide for unfinished Windows/WASM storage backends.
+Status: **v0.6.0, native POSIX backend**. Windows and browser backends do not
+exist yet (`unsupported_platform`). API: [api.md](api.md).
 
-## What is stored where?
-
-A caller chooses an application/service **owner**. Normal native user roots
-resolve to `${XDG_CONFIG_HOME}/aowis/<owner>` when `XDG_CONFIG_HOME` is
-absolute, otherwise `${HOME}/.config/aowis/<owner>`; explicit owner roots are
-also possible. For example:
+## Layout on disk
 
 ```text
-~/.config/aowis/gui/wireguard/
-  .lock
-  <uuidv7>.json
+~/.config/aowis/gui/          0700, owned by the user
+├── .lock                     0600, owner lock (read-write mode only)
+└── wireguard/                0700
+    ├── <uuidv7>.json         0600, one record each
+    └── .tmp-<uuidv7>         only after an interrupted write; removed on next open/write
 ```
 
-Each record contains a versioned envelope, opaque revision token, and a JSON
-object payload. The WireGuard payload includes the **complete** `.conf` text,
-including `PrivateKey`. No original source path is stored. The file is a
-*configuration record*, **not** a runnable `wg-quick` `.conf` file; use
-`WireGuardProfiles::exportText()` for an explicit export.
+A record is `{"envelope_version":1,"id":…,"revision":…,"payload":{…}}`. A
+WireGuard payload contains the complete imported `.conf` text **including
+`PrivateKey`**; the source path is never stored. A record is not a runnable
+`wg-quick` file — use `exportText()` for an explicit export.
 
-Owners and collections are independent. The library does **not** create a
-world-writable `aowis/shared/` directory, automatically sync devices, or store
-DVMDB project data in the configuration root.
-
-## Backup and transfer
-
-Copy the **entire owning directory** when the application is stopped or not
-writing. Include its JSON records, not merely the human-readable names.
-Example (review destination and access controls first):
+Administrator roots (opened `read_only`), e.g.:
 
 ```bash
-# For a native GUI using the default XDG location:
+sudo install -d -o root -g aowis -m 0750 /etc/aowis/server-dvmdb /etc/aowis/server-dvmdb/settings
+sudo install -o root -g aowis -m 0640 <record>.json /etc/aowis/server-dvmdb/settings/
+```
+
+Group/other-writable entries and symlinks at or below the owner root are
+rejected in every mode.
+
+## Security model
+
+| Aspect | Behavior |
+| --- | --- |
+| Permissions (read-write) | Owner root and collections `0700`, records and lock `0600`, owned by the effective user; weaker permissions are rejected, never repaired |
+| Permissions (read-only) | Owned by the user or root; group/other-readable allowed, writable never |
+| Paths | Descriptor walk from `/`; ancestors above the owner root may be symlinks; at/below it `O_NOFOLLOW`, traversal and wrong file types rejected |
+| Writes | Exclusive temp file, `fsync`, `linkat` (create) / `renameat` (update), directory `fsync` |
+| Concurrency | One `flock` per owner, polled up to `lock_timeout`; revision tokens reject stale edits; `OwnerSession` serializes multi-step operations |
+| Reads in read-only mode | No lock: every write is an atomic whole-record replacement |
+| Secrets in diagnostics | Error messages never contain payloads, text or keys; callers must not log profiles, payloads or exports |
+| Encryption at rest | **None.** Mode bits do not protect against the same user, administrators or physical access |
+| Windows | Roots under `%LOCALAPPDATA%`, never roaming `%APPDATA%` (keys must not sync to domain servers) |
+| Hook commands in imported text | Never executed by CONFIG; AOWIS-NETWORK ignores them |
+
+## Backup, restore, transfer
+
+Copy the **whole owner root while the owner is stopped**:
+
+```bash
 mkdir -p /path/to/private-backup/aowis
 cp -a "$HOME/.config/aowis/gui" /path/to/private-backup/aowis/
 ```
 
-If you use a different `XDG_CONFIG_HOME` or an explicit service owner root,
-copy **that** configured location instead. The example is not a general-purpose
-backup script: confirm the right root, ensure the destination is private and
-protect the transport. Restoring into an existing live owner directory can
-race with writes or create revision/conflict surprises; stop the owner and
-restore its complete tree as a unit. Reopen the store after restore and verify
-that profile names and IDs match expectations.
+A copy is a **secret-bearing backup**: encrypt it outside a trusted machine.
+Restore as a complete tree into a stopped owner, then reopen and check names
+and IDs. Not included: DVMDB repositories, working copies, tiles, caches,
+logs, and anything external referenced by imported text (key files, hook
+scripts); endpoints may be unreachable from the destination.
 
-**A copied configuration directory is a secret-bearing backup.** Encrypt it
-when storing or transferring it outside a trusted local environment. Source
-`0700`/`0600` permissions are access restrictions, not encryption at rest.
-Ensure the destination filesystem and permissions are suitable before loading
-secrets. The current store rejects insecure owner directories/files rather
-than silently repairing them.
+## Errors and safe responses
 
-**Portability limit:** external paths, script hooks or other directives inside
-an imported WireGuard file may not work on the destination. A network endpoint
-may be unreachable. DVMDB repositories/working copies, maps, caches and logs
-are *not* in this tree. Copying settings is not cloning the whole installation.
-
-## Security model
-
-| Guarantee / constraint | Current behavior |
+| `ErrorCode` | Meaning → response |
 | --- | --- |
-| Stored owner and collection | Restrictive POSIX directory permissions (`0700`) |
-| Profile, lock and temporary files | Restrictive POSIX file permissions (`0600`) |
-| Unsafe filesystem paths | Symlinks/traversal and unexpected file types rejected |
-| Normal writes | Temp file, `fsync`, atomic per-record publication, directory `fsync` |
-| Multi-process edits | Advisory collection locking plus expected revision token |
-| Private keys | Stored *inside* managed JSON; never meant for logging |
-| At-rest encryption | **Not provided** |
-| Same-user processes / privileged administrators | POSIX mode bits alone do **not** isolate secrets from them |
-| True sudden power-loss durability | **Not established by existing tests** |
-| Cross-record transaction | **Not provided** |
+| `invalid_owner_id`, `invalid_collection`, `invalid_root` | Caller bug: check identifiers and roots |
+| `missing_environment`, `unsupported_platform` | No usable root/backend: choose an explicit root or supported platform |
+| `not_found` | Record or (read-only) root missing: re-list |
+| `conflict` | Changed since read, or ID collision: reload and compare, never force |
+| `lock_timeout` | Another instance holds the owner lock: nothing changed, retry later |
+| `session_mismatch` | Session of a different store passed: caller bug |
+| `permission_denied` | Wrong owner/mode, or a write on a read-only store |
+| `unsafe_path` | Symlink, wrong file type or unsafe permissions: inspect, do not bypass |
+| `invalid_json`, `invalid_wireguard_profile`, `object_too_large` | Bad input: show the message, let the user correct it |
+| `corrupt_object` | Damaged record: listed in `unreadable`; keep a backup, then `eraseCorrupt`/`eraseUnreadable` |
+| `unsupported_schema` | Written by a newer release: keep it; never deleted by the erase helpers |
+| `profile_in_use`, `reference_unavailable` | Delete blocked by references or missing catalogue check |
+| `io_failure` | Filesystem/sync error; after publication the write may have happened — re-read before retrying |
 
-A future export or browser integration must not downgrade secret handling
-without an explicit design decision. The library does not run imported hook
-commands; AOWIS-NETWORK must enforce its own runtime directive policy.
+## Tests
 
-## Failure and recovery guidance
+```bash
+./compile_linux_tests.sh                 # all CTest suites, fails on any failure
+python3 tests/repository_tooling_test.py # patch/snapshot tooling (9 tests)
+ctest --test-dir build-linux-tests --output-on-failure -R '^aowis-config-backend-contract$'
+```
 
-| Symptom / `ErrorCode` | Interpretation and safe response |
+| CTest target | Coverage |
 | --- | --- |
-| `invalid_owner_id`, `invalid_collection`, `invalid_root` | Caller supplied an invalid owner/collection/path; check identifiers and explicit roots |
-| `missing_environment`, `unsupported_platform` | No usable platform-specific root/backend; choose a supported platform or explicit native root |
-| `permission_denied`, `unsafe_path` | Ownership, mode, symlink (at or below the owner directory) or path-type rejection; inspect the path instead of bypassing the check |
-| `lock_timeout` | Another process held the collection lock past the timeout (hung instance, stalled filesystem); nothing changed, retry later |
-| `invalid_json`, `invalid_wireguard_profile` | Bad payload or blocking WireGuard validation; show diagnostics and let the user correct input |
-| `unsupported_schema`, `corrupt_object` | Store contains unknown or invalid records. Listings report them in `unreadable` instead of failing; preserve a backup, then remove `corrupt_object` records with `eraseCorrupt`/`eraseUnreadable`. `unsupported_schema` records belong to a newer release and are never removed by these calls |
-| `not_found`, `conflict` | Object was removed/changed or supplied revision is stale; re-list and re-read before retrying |
-| `profile_in_use`, `reference_unavailable` | Delete blocked by service references or missing authoritative catalogue; repair/reload the caller's reference lookup |
-| `io_failure`, `object_too_large` | Filesystem/sync or size limit; keep original content, report failure, re-read after uncertain publication |
+| `aowis-config-core` | Owner IDs, roots, `Result`, version |
+| `aowis-config-consumer-smoke` | Public headers/target only; `MemoryStorage` end to end on every platform |
+| `aowis-config-object-store` | POSIX: CRUD, revisions, permissions, symlinked ancestors vs. symlinked owner, damaged entries, `SIGKILL` crash injection before/after publish, cross-process conflicts, owner lock held by another process (all collections blocked, read-only not), read-only mode (`/etc`-style permissions, no lock/creation, writes refused) |
+| `aowis-config-wireguard-profiles` | Text integrity only (no syntax), lifecycle, reference guard, reference count and reassign-then-delete inside one `OwnerSession`, foreign session, unreadable/wrong-type/newer-version records, POSIX permissions, relocation |
+| `aowis-config-backend-contract` | Same suite on every backend (memory, POSIX): CRUD, damaged/foreign/newer entries, 8-thread lost-update race, zero-timeout contention, held session excludes writers but not readers, read-only contract, WireGuard; clean under ThreadSanitizer |
 
-A successful update returns a **new** revision token. If an I/O or sync error
-occurs *after publication*, the write may already have taken effect. Re-read
-the object and compare its contents before offering another save. Never assume
-an error guarantees that nothing changed.
+Installed-package check (not a CTest target):
 
-An interrupted pre-publication write may leave a `.tmp-<uuidv7>` file. The
-store checks and removes recognized orphan temporary files on the next
-`open()` or write; readers ignore them. This is **not** a migration system or a general file repair
-utility. Avoid hand-editing or deleting object records while the application
-is using the collection; the envelope and revisions are significant.
+```bash
+./compile_linux.sh
+cmake --install build-linux --prefix /tmp/aowis-config-install
+cmake -S tests/installed_consumer -B build-installed-consumer -G Ninja -DCMAKE_PREFIX_PATH=/tmp/aowis-config-install
+cmake --build build-installed-consumer && ./build-installed-consumer/aowis-config-installed-consumer
+```
 
-## Operational checklist
+**Not proven:** real power-loss durability (only process kills), Windows or
+browser persistence (no backends), GUI integration (Phase 4), encryption at
+rest (none), tunnel operation (AOWIS-NETWORK).
 
-- [ ] Confirm the correct owner/root and keep each application's store separate.
-- [ ] Protect both live files and backups; never publish exported private keys.
-- [ ] Treat `conflict` as a reload/compare event, not a forced overwrite.
-- [ ] Coordinate service-reference changes with WireGuard profile deletion.
-- [ ] Do not treat `Running` as a proven peer handshake or reachability.
-- [ ] Test copied roots from a *stopped* owner before considering a migration complete.
-
-For implementation details and limits, see [Storage API](storage-api.md) and
-[WireGuard profiles](wireguard-profiles.md).
+When changing the library: add a test for the behavior and an adverse case;
+run all suites, the tooling tests and (for CMake changes) the installed
+consumer; update [architecture.md](architecture.md) decisions and roadmap.

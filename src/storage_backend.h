@@ -20,39 +20,44 @@ inline constexpr std::size_t max_record_bytes = 8U * 1024U * 1024U;
 // ---------------------------------------------------------------------------
 // Storage backend contract
 //
-// ObjectCollection owns everything platform-independent: the JSON envelope,
-// payload validation, revision checks, listing/unreadable classification and
-// the erase/eraseCorrupt rules. A backend only moves opaque bytes for one
-// collection of one owner. Every backend MUST guarantee:
+// OwnerStore/ObjectCollection own everything platform-independent: the JSON
+// envelope, payload validation, revision checks, listing/unreadable
+// classification and the erase/eraseCorrupt rules. A backend only moves
+// opaque bytes inside ONE owner root. Every backend MUST guarantee:
 //
-//  1. Exclusive sessions. lock() returns a session holding a lock that
-//     excludes every other session on the same collection, across threads
-//     and (where the platform has processes sharing storage) across
-//     processes. lock() waits at most the backend's configured timeout and
-//     then fails with ErrorCode::lock_timeout; it never blocks indefinitely.
-//  2. Atomic single-entry replacement. After writeEntry() returns success a
-//     reader sees the complete new bytes; after a failure or a crash it sees
-//     either the complete old bytes or the complete new bytes, never a mix.
-//     create_only=true must fail with ErrorCode::conflict if the entry exists
-//     and must never replace it.
-//  3. Durability before success. writeEntry()/removeEntry() return success
-//     only once the change survives the backend's documented failure model
-//     (process crash for native files; the platform's persistence guarantee
-//     for browser storage). An error after publication may leave the change
-//     applied; callers re-read.
-//  4. Faithful enumeration. entryNames() returns every stored entry whose
-//     name ends in ".json", including names that are not valid object IDs,
-//     so damaged/foreign entries are reported, never silently hidden.
-//     Backend bookkeeping (locks, temporaries) never appears in the result.
-//  5. Per-entry errors. readEntry() reports not_found, unsafe_path,
-//     object_too_large, permission_denied or io_failure for one entry; the
-//     caller turns these into UnreadableObject rows. Messages never contain
-//     stored bytes.
-//  6. Owner isolation. A backend instance is bound to one owner root and one
-//     validated collection name; it can never address another owner.
-//  7. Crash residue. lock(recover=true) removes the backend's own leftovers
-//     of interrupted writes. Leftovers must be invisible to readers.
+//  1. Exclusive owner sessions (read-write mode). lock() returns a session
+//     that excludes every other read-write session on the same owner root,
+//     across threads and (where processes share storage) across processes.
+//     One lock covers all collections of the owner, so a caller can check
+//     references in one collection and change another without a race.
+//     lock() waits at most the configured timeout, then fails with
+//     ErrorCode::lock_timeout; it never blocks indefinitely.
+//  2. Atomic single-entry replacement. After writeEntry() succeeds a reader
+//     sees the complete new bytes; after a failure or crash it sees the
+//     complete old or the complete new bytes, never a mix. create_only=true
+//     fails with ErrorCode::conflict if the entry exists and never replaces.
+//     Because of this, read-only sessions need no lock.
+//  3. Durability before success, under the backend's documented failure
+//     model. An error after publication may leave the change applied.
+//  4. Faithful enumeration: every stored "*.json" entry, including names
+//     that are not object IDs; backend bookkeeping never appears.
+//  5. Per-entry errors (not_found, unsafe_path, object_too_large,
+//     permission_denied, io_failure) without stored bytes in messages.
+//  6. Owner isolation: a backend instance can only address its owner root,
+//     and collection names are validated before they reach the backend.
+//  7. Crash residue: collection(name, recover=true) removes the backend's
+//     own leftovers of interrupted writes in that collection; leftovers are
+//     invisible to readers.
+//  8. Read-only mode: never creates, locks, recovers or writes anything;
+//     write calls fail with permission_denied. A missing collection reads as
+//     empty. Ownership rules may be relaxed for administrator-managed roots
+//     (e.g. root-owned, group-readable /etc), never for writability.
+//
+// Sessions and their collection handles are used on the thread that created
+// them and must not outlive the OwnerSessionImpl they came from.
 // ---------------------------------------------------------------------------
+
+enum class BackendMode { read_write, read_only };
 
 class CollectionSession {
 public:
@@ -64,20 +69,28 @@ public:
     [[nodiscard]] virtual Result<bool> removeEntry(const ObjectId &id) = 0;
 };
 
-class CollectionBackend {
+class OwnerSessionImpl {
 public:
-    virtual ~CollectionBackend() = default;
+    virtual ~OwnerSessionImpl() = default;
 
-    // recover=true additionally removes crash residue (contract item 7);
-    // ObjectCollection requests it for open() and every mutating call.
-    [[nodiscard]] virtual Result<std::unique_ptr<CollectionSession>> lock(bool recover) const = 0;
+    // Read-write: creates and verifies the collection; recover=true removes
+    // crash residue (item 7). Read-only: opens it if present (item 8).
+    [[nodiscard]] virtual Result<std::unique_ptr<CollectionSession>> collection(
+        const std::string &name, bool recover) = 0;
+};
+
+class OwnerBackend {
+public:
+    virtual ~OwnerBackend() = default;
+
+    [[nodiscard]] virtual Result<std::unique_ptr<OwnerSessionImpl>> lock() const = 0;
+    [[nodiscard]] virtual BackendMode mode() const noexcept = 0;
 };
 
 // The persistent backend of the current platform. Native POSIX today; on
 // Windows and Emscripten this returns unsupported_platform until a backend
 // meeting the contract above is implemented (selected in CMakeLists.txt).
-[[nodiscard]] Result<std::shared_ptr<const CollectionBackend>> openNativeBackend(
-    const std::filesystem::path &owner_root, const std::string &collection,
-    std::chrono::milliseconds lock_timeout);
+[[nodiscard]] Result<std::shared_ptr<const OwnerBackend>> openNativeBackend(
+    const std::filesystem::path &owner_root, BackendMode mode, std::chrono::milliseconds lock_timeout);
 
 } // namespace aowis::config::detail
