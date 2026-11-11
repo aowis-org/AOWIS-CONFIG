@@ -1,6 +1,6 @@
 # API reference and integration
 
-Status: **v0.7.0**, C++20, namespace `aowis::config`, CMake target
+Status: **v0.8.0**, C++20, namespace `aowis::config`, CMake target
 `aowis::config`. Design background: [architecture.md](architecture.md).
 
 All fallible calls return `Result<T>`: `hasValue()` / `explicit operator bool`,
@@ -19,7 +19,7 @@ contain stored payloads, configuration text or keys.
 | `memory_storage.h` | `MemoryStorage` |
 | `wireguard_profiles.h` | `WireGuardProfiles`, inputs, summaries, `WireGuardReferenceCount` |
 | `json.h` | `validateJsonObject()` |
-| `error.h`, `result.h`, `version.h` | `ErrorCode`, `Error`, `Result<T>`, `version_major/minor/patch` (0.7.0) |
+| `error.h`, `result.h`, `version.h` | `ErrorCode`, `Error`, `Result<T>`, `version_major/minor/patch` (0.8.0) |
 
 ## Identities and roots
 
@@ -202,6 +202,7 @@ Every backend guarantees:
 backend of the build platform (including the browser backend's C++ logic on
 a fake key-value store); a new backend is added to `backends()` there
 and must pass unchanged. Adding a backend: implement `openNativeBackend()` in
-`src/<platform>_backend.cpp`, select it in `CMakeLists.txt` instead of
-`unsupported_backend.cpp`, add it to the contract test, document its failure
-model in [operations.md](operations.md).
+`src/<platform>_backend.cpp`, select it in `CMakeLists.txt`, add it to the
+contract test, document its failure model in [operations.md](operations.md).
+Windows specifics (DACL policy, reparse points, durability):
+[operations.md](operations.md#windows-storage).

@@ -112,7 +112,8 @@ public:
     // nothing at or below the owner directory may be a symlink. read_only:
     // the owner root must exist (not_found otherwise). Emscripten: the
     // origin's localStorage; writes only in the tab holding the writer lease
-    // (see docs/api.md). Windows: unsupported_platform until its backend exists.
+    // (see docs/api.md). Windows: private DACLs instead of modes, no reparse
+    // points at or below the owner directory (see docs/operations.md).
     [[nodiscard]] static Result<OwnerStore> open(const ConfigRoot &root, OpenOptions options = {});
 
     // Non-persistent store in a MemoryStorage; every platform, same semantics.

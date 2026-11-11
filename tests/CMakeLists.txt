@@ -17,7 +17,7 @@ target_link_libraries(aowis-config-wireguard-profiles-tests PRIVATE aowis::confi
 add_test(NAME aowis-config-wireguard-profiles COMMAND aowis-config-wireguard-profiles-tests)
 
 # Same behavioral contract for every backend available on this platform
-# (always in-memory; native POSIX where implemented).
+# (always in-memory and browser key-value; native POSIX or native Windows).
 add_executable(aowis-config-backend-contract-tests backend_contract_test.cpp)
 target_link_libraries(aowis-config-backend-contract-tests PRIVATE aowis::config)
 # Internal headers: the key-value (browser) backend is tested natively on a

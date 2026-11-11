@@ -4,6 +4,16 @@
 #include <string>
 #include <utility>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace aowis::config {
 
 namespace {
@@ -16,6 +26,21 @@ Result<std::filesystem::path> absoluteRoot(const std::filesystem::path &input)
     return Result<std::filesystem::path>::success(input.lexically_normal());
 }
 
+#if defined(_WIN32)
+// The wide API: getenv() returns the ANSI code page and mangles profile
+// paths with characters outside it (e.g. C:\Users\Łukasz).
+std::filesystem::path environmentAbsolutePath(const wchar_t *name)
+{
+    const DWORD size = ::GetEnvironmentVariableW(name, nullptr, 0);
+    if (size <= 1) return {};
+    std::wstring value(size, L'\0');
+    const DWORD written = ::GetEnvironmentVariableW(name, value.data(), size);
+    if (written == 0 || written >= size) return {};
+    value.resize(written);
+    const std::filesystem::path path(value);
+    return path.is_absolute() ? path : std::filesystem::path();
+}
+#elif !defined(__EMSCRIPTEN__)
 std::filesystem::path environmentAbsolutePath(const char *name)
 {
     const char *raw = std::getenv(name);
@@ -25,6 +50,7 @@ std::filesystem::path environmentAbsolutePath(const char *name)
     const std::filesystem::path path(raw);
     return path.is_absolute() ? path : std::filesystem::path();
 }
+#endif
 } // namespace
 
 Result<ConfigRoot> ConfigRoot::fromOwnerRoot(
@@ -57,7 +83,7 @@ Result<ConfigRoot> ConfigRoot::forCurrentUser(OwnerId owner)
 #elif defined(_WIN32)
     // LOCALAPPDATA, never the roaming APPDATA: owner roots hold private keys,
     // and roaming profiles are synchronized to domain file servers.
-    const std::filesystem::path local_appdata = environmentAbsolutePath("LOCALAPPDATA");
+    const std::filesystem::path local_appdata = environmentAbsolutePath(L"LOCALAPPDATA");
     if (local_appdata.empty()) {
         return Result<ConfigRoot>::failure({ErrorCode::missing_environment,
                                            "LOCALAPPDATA is unset or not an absolute path"});

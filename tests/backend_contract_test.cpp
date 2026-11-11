@@ -1,6 +1,6 @@
 // Runs one behavioral contract against every storage backend available on
-// this platform: always the in-memory backend, plus native POSIX where it
-// exists. Shared ObjectCollection/WireGuardProfiles logic is therefore
+// this platform: always the in-memory backend, plus native POSIX or native
+// Windows. Shared ObjectCollection/WireGuardProfiles logic is therefore
 // exercised on Windows and Emscripten builds too, and a future persistent
 // backend only needs to be added to backends() to be held to the same rules.
 #include <aowis/config/memory_storage.h>
@@ -420,6 +420,50 @@ void browserSpecifics()
             "browser: foreign owner or nested keys listed");
 }
 
+#if defined(_WIN32)
+// Windows-only rules: crash residue, non-file entries and links below the
+// owner root. Symlink creation needs Developer Mode or a privilege; that
+// case is skipped when the OS refuses it.
+void windowsSpecifics(const std::filesystem::path &native_root)
+{
+    Result<aowis::config::OwnerId> owner = aowis::config::OwnerId::parse("gui");
+    Result<aowis::config::ConfigRoot> root = aowis::config::ConfigRoot::fromOwnerRoot(owner.value(), native_root);
+    Result<OwnerStore> store = OwnerStore::open(root.value());
+    require(store.hasValue(), "native-windows: open failed");
+    ObjectCollection items = store.value().collection("windows").value();
+    Result<StoredObject> seeded = items.create("{\"w\":1}");
+    require(seeded.hasValue(), "native-windows: create failed");
+    require(std::filesystem::is_regular_file(native_root / ".lock"), "native-windows: owner lock file missing");
+
+    const std::filesystem::path residue = native_root / "windows" / (".tmp-" + ObjectId::generate().value().value());
+    { std::ofstream output(residue, std::ios::binary); output << "partial"; }
+    require(store.value().collection("windows").hasValue(), "native-windows: reopen failed");
+    require(!std::filesystem::exists(residue), "native-windows: crash residue not removed");
+
+    const std::string directory_name = ObjectId::generate().value().value() + ".json";
+    std::filesystem::create_directory(native_root / "windows" / directory_name);
+    Result<ObjectListing> listed = items.list();
+    require(listed && listed.value().objects.size() == 1 && listed.value().unreadable.size() == 1
+                && listed.value().unreadable[0].error.code == ErrorCode::unsafe_path,
+            "native-windows: directory entry not reported as unsafe");
+    std::filesystem::remove(native_root / "windows" / directory_name);
+
+    const std::string link_name = ObjectId::generate().value().value() + ".json";
+    std::error_code refused;
+    std::filesystem::create_symlink(native_root / "windows" / (seeded.value().info.id.value() + ".json"),
+                                    native_root / "windows" / link_name, refused);
+    if (!refused) {
+        Result<ObjectListing> linked = items.list();
+        require(linked && linked.value().unreadable.size() == 1
+                    && linked.value().unreadable[0].error.code == ErrorCode::unsafe_path,
+                "native-windows: symlinked entry not rejected");
+        std::filesystem::remove(native_root / "windows" / link_name);
+    } else {
+        std::cout << "native-windows: symlink case skipped (no symlink privilege)\n";
+    }
+}
+#endif
+
 std::vector<Fixture> backends(MemoryStorage &memory, const std::filesystem::path &native_root)
 {
     std::vector<Fixture> fixtures;
@@ -449,6 +493,19 @@ std::vector<Fixture> backends(MemoryStorage &memory, const std::filesystem::path
             }
             std::filesystem::permissions(file, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
         }});
+#elif defined(_WIN32)
+    fixtures.push_back({"native-windows",
+        [native_root](OpenOptions options) {
+            Result<aowis::config::OwnerId> owner = aowis::config::OwnerId::parse("gui");
+            Result<aowis::config::ConfigRoot> root = aowis::config::ConfigRoot::fromOwnerRoot(owner.value(), native_root);
+            return OwnerStore::open(root.value(), options);
+        },
+        [native_root](const std::string &collection, const std::string &entry, const std::string &bytes) {
+            // New files inherit the collection's private DACL.
+            std::ofstream output(native_root / collection / entry, std::ios::binary | std::ios::trunc);
+            output << bytes;
+            require(static_cast<bool>(output), "native-windows: cannot plant entry");
+        }});
 #else
     static_cast<void>(native_root);
 #endif
@@ -465,11 +522,17 @@ int main()
         const char *made = ::mkdtemp(name);
         require(made != nullptr, "cannot create native test root");
         native_root = std::filesystem::path(made) / "aowis" / "gui";
+#elif defined(_WIN32)
+        native_root = std::filesystem::temp_directory_path()
+                      / ("aowis-config-contract-" + ObjectId::generate().value().value()) / "aowis" / "gui";
 #endif
         MemoryStorage memory;
         memorySpecifics();
         browserSpecifics();
         for (const Fixture &fixture : backends(memory, native_root)) runContract(fixture);
+#if defined(_WIN32)
+        windowsSpecifics(native_root);
+#endif
         if (!native_root.empty()) std::filesystem::remove_all(native_root.parent_path().parent_path());
         std::cout << "AOWIS-CONFIG backend contract tests passed\n";
         return 0;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(AOWISConfig VERSION 0.7.0 LANGUAGES CXX)
+project(AOWISConfig VERSION 0.8.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -16,11 +16,10 @@ set(aowis_config_sources
     src/key_value_backend.cpp
 )
 # Exactly one persistent backend per platform (contract: src/storage_backend.h).
-# The Windows backend replaces unsupported_backend.cpp when implemented.
 if(EMSCRIPTEN)
     list(APPEND aowis_config_sources src/browser_backend.cpp)
 elseif(WIN32)
-    list(APPEND aowis_config_sources src/unsupported_backend.cpp)
+    list(APPEND aowis_config_sources src/windows_backend.cpp)
 else()
     list(APPEND aowis_config_sources src/posix_backend.cpp)
 endif()
@@ -36,6 +35,10 @@ target_compile_features(aowis-config PUBLIC cxx_std_20)
 if(NOT EMSCRIPTEN)
     find_package(Threads REQUIRED)
     target_link_libraries(aowis-config PUBLIC Threads::Threads)
+endif()
+if(WIN32)
+    # Security descriptors and token queries (GetSecurityInfo, SDDL).
+    target_link_libraries(aowis-config PRIVATE advapi32)
 endif()
 target_include_directories(aowis-config PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

@@ -1,6 +1,6 @@
 # Architecture, decisions and roadmap
 
-Status: **v0.7.0**. Updated: 2026-11-10. API details: [api.md](api.md);
+Status: **v0.8.0**. Updated: 2026-11-11. API details: [api.md](api.md);
 security and operations: [operations.md](operations.md).
 
 ## 1. Purpose and boundaries
@@ -109,7 +109,7 @@ detail::OwnerBackend → OwnerSessionImpl → CollectionSession   private contra
   ├── memory_backend.cpp       MemoryStorage, every platform
   ├── key_value_backend.cpp    generic logic over a flat key-value store
   │     └── browser_backend.cpp  Emscripten: localStorage + Web Locks writer lease
-  └── unsupported_backend.cpp  Windows (placeholder)
+  └── windows_backend.cpp      Windows: DACL policy, LockFileEx, write-through renames
 ```
 
 Exactly one persistent backend is compiled per platform. The contract
@@ -158,6 +158,8 @@ Status: **A** agreed and implemented, **S** superseded (kept for history).
 | D40 A | CONFIG does not parse WireGuard; AOWIS-NETWORK owns the single `.conf` parser | No diverging parsers; storage checks integrity only |
 | D41 A | Browser backend on `localStorage` (synchronous, ~5 MB/origin), one key per record, root `/aowis/<owner>` as key namespace | No Asyncify/JSPI in consumers; WireGuard is disabled in browsers, so no keys are stored there |
 | D42 A | One writer tab per owner root: a Web Locks lease requested by the first read-write store and held for the page's lifetime; other tabs read; no Web Locks → read-only (fail closed) | Cross-tab lost updates impossible; a waiting tab takes over when the writer closes |
+| D43 A | Windows backend: `\\?\` paths; owner/collection directories held without `FILE_SHARE_DELETE`; `LockFileEx` on `<owner>\.lock`; temp + `FlushFileBuffers` + `MoveFileExW(MOVEFILE_WRITE_THROUGH)` (no `ReplaceFileW`: it merges attributes/ACLs and is not atomic); no reparse points at/below the owner root | Same contract as POSIX without `openat`; handle-based enumeration and orphan deletion |
+| D44 A | Windows access policy: owner ∈ {user, SYSTEM, Administrators}; read-write: no allow entry for anyone else; read-only: no write rights for anyone else; new objects get a protected user-only DACL | Counterpart of 0700/0600 and D38; Explorer's default reset stays accepted |
 | D10 S | ~~Distinguish parse validity from runtime support in CONFIG~~ | Superseded by D40 |
 | D20 S | ~~Caller-visible schema version on every record~~ | Superseded by D37 |
 | D24 S | ~~Per-collection `flock`~~ | Superseded by D36 |
@@ -171,10 +173,8 @@ Status: **A** agreed and implemented, **S** superseded (kept for history).
 2. **Browser administrator config:** whether the webroot `.ini` the WASM GUI
    reads today becomes a read-only browser root (fetched records) or stays a
    GUI concern (Phase 5).
-3. **Windows backend:** `ReplaceFileW`/`MoveFileExW(MOVEFILE_WRITE_THROUGH)`,
-   `LockFileEx` with polled deadline, owner-only ACLs, reparse-point rejection.
-4. **Cross-owner transfer UX:** export/import and ID collisions.
-5. **Optional encryption at rest / key rotation:** never a mandatory keychain
+3. **Cross-owner transfer UX:** export/import and ID collisions.
+4. **Optional encryption at rest / key rotation:** never a mandatory keychain
    (portability, D11).
 
 ## 7. Roadmap
@@ -186,9 +186,9 @@ Status: **A** agreed and implemented, **S** superseded (kept for history).
 | Design fixes | Done (0.6) | Owner lock + `OwnerSession`, read-only mode, internal envelope version, `%LOCALAPPDATA%`, WireGuard parsing moved to NETWORK, docs merged |
 | NETWORK parser | Done | `parseWireGuardConf()` in AOWIS-NETWORK with tests (separate repo) |
 | Browser backend | Done (0.7) | localStorage + Web Locks writer lease; C++ logic in the contract suite, JS glue under Node; first real-browser run happens with Phase 4 |
-| Phase 4 | **Next** | GUI connections + WireGuard: new connection schema, profiles in CONFIG, probe/reader/writer by profile ID, `Used by` from connections, delete `servers/profiles`, `wireguard_profile_path`, `readProfile()` and the localStorage path |
-| Windows backend | Planned | Before Phase 4 ships in the Standalone build |
-| Map-server client | Planned | Second connection type; API keys into private records |
+| Phase 4 | Done | GUI connections + WireGuard: new connection schema, profiles in CONFIG, probe/reader/writer by profile ID, `Used by` from connections, delete `servers/profiles`, `wireguard_profile_path`, `readProfile()` and the localStorage path |
+| Windows backend | Done (0.8) | D43/D44; syntax-checked only, first compile and run in the Windows build |
+| Map-server client | **Next** | Second connection type; API keys into private records |
 | Phase 5 | Planned | Unit profiles (swap behind `UnitProfileStorage`), then preferences |
 | Phase 6 | Planned | Mobile and servers opt in one at a time (servers via read-only roots) |
 | Phase 7 | Planned | Cross-platform security review, power-loss testing, release checklist |
