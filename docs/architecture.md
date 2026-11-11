@@ -161,6 +161,7 @@ Status: **A** agreed and implemented, **S** superseded (kept for history).
 | D43 A | Windows backend: `\\?\` paths; owner/collection directories held without `FILE_SHARE_DELETE`; `LockFileEx` on `<owner>\.lock`; temp + `FlushFileBuffers` + `MoveFileExW(MOVEFILE_WRITE_THROUGH)` (no `ReplaceFileW`: it merges attributes/ACLs and is not atomic); no reparse points at/below the owner root | Same contract as POSIX without `openat`; handle-based enumeration and orphan deletion |
 | D44 A | Windows access policy: owner ∈ {user, SYSTEM, Administrators}; read-write: no allow entry for anyone else; read-only: no write rights for anyone else; new objects get a protected user-only DACL | Counterpart of 0700/0600 and D38; Explorer's default reset stays accepted |
 | D45 A | Preferences are ordinary versioned JSON records owned by the application (GUI: collection `preferences`, one record per group, `{"preferences_version":1,"group","values"}`); updates merge keys inside one `OwnerSession`; no key/value API in CONFIG | Same path natively and in browsers; concurrent instances keep each other's keys; closes open question 1 |
+| D46 A | The GUI INI is retired: every GUI setting is an AOWIS-CONFIG record; the former INI files are deleted at startup. Exception to D16: the commit author UUIDv7 is imported first | Commits keep naming the same author; no second configuration file remains |
 | D10 S | ~~Distinguish parse validity from runtime support in CONFIG~~ | Superseded by D40 |
 | D20 S | ~~Caller-visible schema version on every record~~ | Superseded by D37 |
 | D24 S | ~~Per-collection `flock`~~ | Superseded by D36 |
@@ -189,6 +190,6 @@ Status: **A** agreed and implemented, **S** superseded (kept for history).
 | Windows backend | Done (0.8) | D43/D44; syntax-checked only, first compile and run in the Windows build |
 | Map-server client | Done (GUI) | `service_type "map-server"` record in the GUI's `connections` collection with base URL and API keys; former INI section deleted without migration (D16); direct transport only, others fail closed |
 | Phase 5a | Done (GUI) | Custom unit profiles in `unit-profiles` (one record per profile, Model overrides as stored); former INI list deleted (D16); the active selection stays in the INI until 5b |
-| Phase 5b | **In progress** | Preferences (D45). Done: language, shortcuts, symbology, map navigation/performance, examples flag (former INI groups deleted, D16). Next: unit-profile selection, map provider fallbacks, commit author identity, then the GUI stops using its INI |
-| Phase 6 | Planned | Mobile and servers opt in one at a time (servers via read-only roots) |
+| Phase 5b | Done (GUI) | Preferences (D45): language, shortcuts, symbology, map navigation/performance, examples flag, unit-profile selection, map provider fallbacks, commit author identity; GUI INI retired (D46) |
+| Phase 6 | **Next** | Mobile and servers opt in one at a time (servers via read-only roots) |
 | Phase 7 | Planned | Cross-platform security review, power-loss testing, release checklist |
