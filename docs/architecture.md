@@ -188,7 +188,7 @@ Status: **A** agreed and implemented, **S** superseded (kept for history).
 | Browser backend | Done (0.7) | localStorage + Web Locks writer lease; C++ logic in the contract suite, JS glue under Node; first real-browser run happens with Phase 4 |
 | Phase 4 | Done | GUI connections + WireGuard: new connection schema, profiles in CONFIG, probe/reader/writer by profile ID, `Used by` from connections, delete `servers/profiles`, `wireguard_profile_path`, `readProfile()` and the localStorage path |
 | Windows backend | Done (0.8) | D43/D44; syntax-checked only, first compile and run in the Windows build |
-| Map-server client | **Next** | Second connection type; API keys into private records |
-| Phase 5 | Planned | Unit profiles (swap behind `UnitProfileStorage`), then preferences |
+| Map-server client | Done (GUI) | `service_type "map-server"` record in the GUI's `connections` collection with base URL and API keys; former INI section deleted without migration (D16); direct transport only, others fail closed |
+| Phase 5 | **Next** | Unit profiles (swap behind `UnitProfileStorage`), then preferences |
 | Phase 6 | Planned | Mobile and servers opt in one at a time (servers via read-only roots) |
 | Phase 7 | Planned | Cross-platform security review, power-loss testing, release checklist |
