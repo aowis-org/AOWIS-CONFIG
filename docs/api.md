@@ -177,7 +177,7 @@ Every backend guarantees:
 | # | Guarantee | POSIX | Memory | Browser |
 | --- | --- | --- | --- | --- |
 | 1 | Exclusive read-write owner sessions across threads/processes; bounded wait → `lock_timeout` | `flock` on `<owner>/.lock`, polled | `std::mutex`, polled | per-root mutex in the tab; across tabs only the Web Locks lease holder writes |
-| 2 | Atomic single-entry replacement; `create_only` never replaces (`conflict`) | fsynced temp + `linkat`/`renameat` | map assignment under lock | one `setItem` per record |
+| 2 | Atomic single-entry replacement; `create_only` never replaces (`conflict`) | fsynced temp + `renameat2(RENAME_NOREPLACE)` (else `linkat`, else existence check under the owner lock) / `renameat` | map assignment under lock | one `setItem` per record |
 | 3 | Success only once durable under the backend's failure model | file + directory `fsync` | lifetime of the last handle | browser's localStorage persistence |
 | 4 | Enumerate every `*.json` entry incl. foreign names; hide bookkeeping | `readdir`, skips `.lock`/`.tmp-*` | map keys | keys under `aowis-config:<root>/<collection>/` |
 | 5 | Per-entry errors without stored bytes | symlink/permission/size checks | size check | size check |

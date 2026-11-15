@@ -2,7 +2,7 @@
 // CMakeLists.txt for every non-Windows, non-Emscripten build. Implements the
 // contract in storage_backend.h with descriptor-based traversal, a
 // time-limited flock(2) lock on <owner>/.lock covering all collections,
-// fsynced temporary files and atomic link/rename publication.
+// fsynced temporary files and atomic no-replace/rename publication.
 //
 // Two access policies:
 //  - read_write: the owner directory and everything below must belong to the
@@ -28,6 +28,9 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
 #include <thread>
 #include <unistd.h>
 #include <utility>
@@ -296,6 +299,66 @@ void testCrashAt(std::string_view point)
 }
 #endif
 
+#if defined(AOWIS_CONFIG_TEST_FAULT_INJECTION)
+// Forces a publication strategy in tests: "link" or "checked-rename".
+bool testInstallVia(std::string_view strategy)
+{
+    const char *requested = std::getenv("AOWIS_CONFIG_TEST_INSTALL_VIA");
+    return requested != nullptr && std::string_view(requested) == strategy;
+}
+#endif
+
+// Publishes the temporary file under filename only if that name is free.
+// Returns 0, or -1 with errno (EEXIST: the name is taken). *temporary_left
+// tells whether the temporary name still exists (a hard link was made).
+//  1. renameat2(RENAME_NOREPLACE): atomic, no hard link (Linux 3.15+,
+//     Android). Android's SELinux policy forbids apps to create hard links
+//     in their data directory, so linkat() fails there with EACCES.
+//  2. linkat(): atomic on filesystems without RENAME_NOREPLACE (macOS, BSD).
+//  3. Existence check, then renameat(): when neither is possible. Safe
+//     between AOWIS instances because every write runs under the owner's
+//     flock (see OwnerSessionImpl).
+int installNew(int directory, const std::string &temporary_name, const std::string &filename, bool *temporary_left)
+{
+    *temporary_left = false;
+    bool atomic_rename = true;
+    bool hard_link = true;
+#if defined(AOWIS_CONFIG_TEST_FAULT_INJECTION)
+    if (testInstallVia("link")) atomic_rename = false;
+    if (testInstallVia("checked-rename")) atomic_rename = hard_link = false;
+#endif
+#if defined(__linux__) && defined(SYS_renameat2)
+    if (atomic_rename) {
+        constexpr unsigned int rename_noreplace = 1U; // RENAME_NOREPLACE, <linux/fs.h>
+        if (::syscall(SYS_renameat2, directory, temporary_name.c_str(), directory, filename.c_str(),
+                      rename_noreplace) == 0) {
+            return 0;
+        }
+        if (errno != ENOSYS && errno != EINVAL && errno != EOPNOTSUPP && errno != EPERM && errno != EACCES) {
+            return -1; // EEXIST and real I/O errors
+        }
+    }
+#else
+    (void)atomic_rename;
+#endif
+    if (hard_link) {
+        if (::linkat(directory, temporary_name.c_str(), directory, filename.c_str(), 0) == 0) {
+            *temporary_left = true;
+            return 0;
+        }
+        if (errno != EPERM && errno != EACCES && errno != ENOSYS && errno != EOPNOTSUPP && errno != EXDEV) {
+            return -1;
+        }
+    }
+    struct stat existing{};
+    if (::fstatat(directory, filename.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0) {
+        errno = EEXIST;
+        return -1;
+    }
+    if (errno != ENOENT) return -1;
+    return ::renameat(directory, temporary_name.c_str(), directory, filename.c_str());
+}
+
 Result<bool> storeRecord(int directory, const ObjectId &id, std::string_view encoded, bool create_only)
 {
     Result<ObjectId> temp_id = ObjectId::generate();
@@ -316,8 +379,9 @@ Result<bool> storeRecord(int directory, const ObjectId &id, std::string_view enc
     // File contents have been fsynced; this closes the handle before install.
     temporary = FileDescriptor();
     int installed = 0;
+    bool temporary_left = false;
     if (create_only) {
-        installed = ::linkat(directory, temporary_name.c_str(), directory, filename.c_str(), 0);
+        installed = installNew(directory, temporary_name, filename, &temporary_left);
     } else {
         installed = ::renameat(directory, temporary_name.c_str(), directory, filename.c_str());
     }
@@ -329,7 +393,7 @@ Result<bool> storeRecord(int directory, const ObjectId &id, std::string_view enc
         }
         return Result<bool>::failure(operatingError("Install object", failure));
     }
-    if (create_only && ::unlinkat(directory, temporary_name.c_str(), 0) < 0) {
+    if (temporary_left && ::unlinkat(directory, temporary_name.c_str(), 0) < 0) {
         return Result<bool>::failure(operatingError("Remove installed object temporary link", errno));
     }
 #if defined(AOWIS_CONFIG_TEST_FAULT_INJECTION)

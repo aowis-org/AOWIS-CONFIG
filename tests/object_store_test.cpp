@@ -517,6 +517,35 @@ void searchOnlyAncestors()
     }
 }
 
+// Every publication strategy (atomic no-replace rename, hard link, checked
+// rename) creates private records and leaves no temporary file. Android's
+// SELinux forbids hard links in app data, so it must never need one.
+void publicationStrategies()
+{
+#if defined(AOWIS_CONFIG_TEST_FAULT_INJECTION)
+    for (const char *strategy : {"", "link", "checked-rename"}) {
+        ::setenv("AOWIS_CONFIG_TEST_INSTALL_VIA", strategy, 1);
+        TemporaryDirectory directory;
+        const std::filesystem::path root = directory.path() / "gui";
+        ObjectCollection stored = collection(root);
+        Result<StoredObject> first = stored.create("{\"n\":1}");
+        Result<StoredObject> second = stored.create("{\"n\":2}");
+        require(first.hasValue() && second.hasValue(), "create failed for a publication strategy");
+        Result<StoredObject> updated = stored.update(first.value().info.id, "{\"n\":3}", first.value().info.revision);
+        require(updated.hasValue(), "update failed for a publication strategy");
+        std::size_t records = 0;
+        for (const std::filesystem::directory_entry &entry : std::filesystem::directory_iterator(root / "wireguard")) {
+            const std::string name = entry.path().filename().string();
+            require(name.rfind(".tmp-", 0) != 0, "temporary file left behind");
+            requireMode(entry.path(), 0600);
+            ++records;
+        }
+        require(records == 2, "unexpected record files");
+    }
+    ::unsetenv("AOWIS_CONFIG_TEST_INSTALL_VIA");
+#endif
+}
+
 int main()
 {
     try {
@@ -527,6 +556,7 @@ int main()
         validationAndCorruption();
         attacksAndPermissions();
         searchOnlyAncestors();
+        publicationStrategies();
         crashRecovery();
         processConflicts();
         copyAndOwnerIsolation();
