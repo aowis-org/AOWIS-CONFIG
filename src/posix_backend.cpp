@@ -65,6 +65,31 @@ Error operatingError(std::string_view operation, int error)
 }
 
 
+// Opens a directory *above* the owner root. These may grant this user search
+// (x) but not read permission: Android's /data, /data/user and /data/data
+// (0771/0711, owned by system) on the way to the app's private directory.
+// O_PATH needs only search permission; such a descriptor serves as the
+// parent of the next openat()/mkdirat(), which is all an ancestor is used for.
+int openAncestor(int parent, const char *name)
+{
+    const int directory = ::openat(parent, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+#ifdef O_PATH
+    if (directory < 0 && (errno == EACCES || errno == EPERM))
+        return ::openat(parent, name, O_PATH | O_DIRECTORY | O_CLOEXEC);
+#endif
+    return directory;
+}
+
+// fsync of a directory this process just created an entry in. A search-only
+// ancestor (O_PATH, see openAncestor()) cannot be synced (EBADF); it is not
+// AOWIS's directory and a new entry in it cannot exist there without write
+// permission, which in practice comes with read permission.
+int syncParent(int directory)
+{
+    if (::fsync(directory) == 0) return 0;
+    return errno == EBADF ? 0 : -1;
+}
+
 // Ownership/permission policy for everything at or below the owner root.
 bool acceptable(const struct stat &status, BackendMode mode, bool directory)
 {
@@ -88,7 +113,7 @@ Result<FileDescriptor> directoryAt(int parent, const std::string &name, BackendM
         if (created < 0 && errno != EEXIST) {
             return Result<FileDescriptor>::failure(operatingError("Create configuration directory", errno));
         }
-        if (created == 0 && ::fsync(parent) < 0) {
+        if (created == 0 && syncParent(parent) < 0) {
             return Result<FileDescriptor>::failure(operatingError("Sync parent after directory creation", errno));
         }
     }
@@ -116,7 +141,7 @@ Result<FileDescriptor> directoryAt(int parent, const std::string &name, BackendM
 
 Result<FileDescriptor> ownerDirectory(const std::filesystem::path &root_path, BackendMode mode)
 {
-    FileDescriptor current(::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    FileDescriptor current(openAncestor(AT_FDCWD, "/"));
     if (!current.valid()) return Result<FileDescriptor>::failure(operatingError("Open filesystem root", errno));
     std::vector<std::string> segments;
     for (const std::filesystem::path &component : root_path) {
@@ -138,14 +163,15 @@ Result<FileDescriptor> ownerDirectory(const std::filesystem::path &root_path, Ba
     for (std::size_t index = 0; index + 1 < segments.size(); ++index) {
         if (mode == BackendMode::read_write) {
             const int created = ::mkdirat(current.get(), segments[index].c_str(), 0700);
-            if (created < 0 && errno != EEXIST) {
+            // EACCES with an existing entry: a search-only ancestor (Android).
+            if (created < 0 && errno != EEXIST && errno != EACCES && errno != EPERM) {
                 return Result<FileDescriptor>::failure(operatingError("Create configuration ancestor directory", errno));
             }
-            if (created == 0 && ::fsync(current.get()) < 0) {
+            if (created == 0 && syncParent(current.get()) < 0) {
                 return Result<FileDescriptor>::failure(operatingError("Sync parent after directory creation", errno));
             }
         }
-        FileDescriptor next(::openat(current.get(), segments[index].c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+        FileDescriptor next(openAncestor(current.get(), segments[index].c_str()));
         if (!next.valid()) {
             if (errno == ENOENT) {
                 return Result<FileDescriptor>::failure({ErrorCode::not_found, "Configuration root does not exist"});

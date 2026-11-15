@@ -84,7 +84,7 @@ record as on disk. Consequences:
 | --- | --- |
 | Permissions (read-write) | Owner root and collections `0700`, records and lock `0600`, owned by the effective user; weaker permissions are rejected, never repaired |
 | Permissions (read-only) | Owned by the user or root; group/other-readable allowed, writable never |
-| Paths | Descriptor walk from `/`; ancestors above the owner root may be symlinks; at/below it `O_NOFOLLOW`, traversal and wrong file types rejected |
+| Paths | Descriptor walk from `/`; ancestors above the owner root may be symlinks and may be search-only (opened with `O_PATH`, e.g. Android `/data`, `/data/user`, `/data/data`); at/below it `O_NOFOLLOW`, traversal and wrong file types rejected |
 | Writes | Exclusive temp file, `fsync`, `linkat` (create) / `renameat` (update), directory `fsync` |
 | Concurrency | One `flock` per owner, polled up to `lock_timeout`; revision tokens reject stale edits; `OwnerSession` serializes multi-step operations |
 | Reads in read-only mode | No lock: every write is an atomic whole-record replacement |
@@ -138,7 +138,7 @@ ctest --test-dir build-linux-tests --output-on-failure -R '^aowis-config-backend
 | --- | --- |
 | `aowis-config-core` | Owner IDs, roots, `Result`, version |
 | `aowis-config-consumer-smoke` | Public headers/target only; `MemoryStorage` end to end on every platform |
-| `aowis-config-object-store` | POSIX: CRUD, revisions, permissions, symlinked ancestors vs. symlinked owner, damaged entries, `SIGKILL` crash injection before/after publish, cross-process conflicts, owner lock held by another process (all collections blocked, read-only not), read-only mode (`/etc`-style permissions, no lock/creation, writes refused) |
+| `aowis-config-object-store` | POSIX: CRUD, revisions, permissions, symlinked ancestors vs. symlinked owner, search-only ancestors (run unprivileged: root bypasses the permission), damaged entries, `SIGKILL` crash injection before/after publish, cross-process conflicts, owner lock held by another process (all collections blocked, read-only not), read-only mode (`/etc`-style permissions, no lock/creation, writes refused) |
 | `aowis-config-wireguard-profiles` | Text integrity only (no syntax), lifecycle, reference guard, reference count and reassign-then-delete inside one `OwnerSession`, foreign session, unreadable/wrong-type/newer-version records, POSIX permissions, relocation |
 | `aowis-config-browser-glue` | Node (when installed): the EM_JS bodies of `browser_backend.cpp` against fake `localStorage`/`navigator.locks` — get/put/create-only/remove/keys, quota, unavailable storage, writer lease pending → held, second tab waits and takes over, independent roots, no Web Locks → fail closed |
 | `aowis-config-backend-contract` | Same suite on every backend (memory, browser key-value logic on a fake store, POSIX or Windows): CRUD, damaged/foreign/newer entries, 8-thread lost-update race, zero-timeout contention, held session excludes writers but not readers, read-only contract, WireGuard; clean under ThreadSanitizer. Windows also: lock file, crash residue removal, directory entry and symlinked entry rejected (`unsafe_path`; symlink case skipped without the privilege) |

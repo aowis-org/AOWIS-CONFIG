@@ -147,6 +147,7 @@ Status: **A** agreed and implemented, **S** superseded (kept for history).
 | D26 A | Reject unsafe paths, symlinks and permissions at/below the owner root | Private 0700/0600 in read-write mode |
 | D27 A | WireGuard record: versioned payload with exact escaped text | Text, metadata and key update together |
 | D30 A | Ancestors above the owner root are trusted and may be symlinks | Silverblue `/home`, macOS `/var`, dotfile `~/.config` work |
+| D30 B | Ancestors need only search permission (`O_PATH` where reading is denied) | Android: the app may only traverse `/data`, `/data/user`, `/data/data` to its private directory |
 | D31 A | Listings report damaged entries; only corrupt ones are removable | Newer-version records are never deleted |
 | D33 A | Locks are time-limited (`lock_timeout`, default 5 s) | A hung instance cannot block forever |
 | D34 A | Private backend contract; one persistent backend per platform | Windows/browser add a file, not a second path |

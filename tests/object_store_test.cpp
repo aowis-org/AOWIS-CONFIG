@@ -491,6 +491,32 @@ void lockTimeout()
 #endif
 } // namespace
 
+// Android: the app's private directory lies below ancestors the app may only
+// search, not read (/data 0771, /data/user 0711, /data/data 0771, owned by
+// system). Root bypasses permissions, so the check is meaningful (and the
+// failure reproducible) only as an ordinary user: tests run unprivileged.
+void searchOnlyAncestors()
+{
+    TemporaryDirectory directory;
+    const std::filesystem::path locked = directory.path() / "data";
+    const std::filesystem::path app = locked / "app";
+    std::filesystem::create_directories(app);
+    require(::chmod(app.c_str(), 0700) == 0 && ::chmod(locked.c_str(), 0111) == 0,
+            "cannot make a search-only ancestor");
+    // Namespace and owner directories are created below the search-only one.
+    Result<ObjectCollection> opened = openCollection(ownerRoot(app / "aowis" / "gui"), "wireguard");
+    const bool usable = opened.hasValue() && opened.value().create("{}").hasValue();
+    // Missing below a search-only ancestor is still "does not exist".
+    Result<ObjectCollection> missing = openCollection(ownerRoot(locked / "absent" / "gui"), "wireguard");
+    require(::chmod(locked.c_str(), 0700) == 0, "cannot restore the ancestor");
+    require(usable, "a search-only ancestor (Android /data) must not block the owner root");
+    if (::geteuid() != 0) {
+        require(!missing && (missing.error().code == ErrorCode::not_found
+                             || missing.error().code == ErrorCode::permission_denied),
+                "an owner root that cannot be created below a search-only ancestor must fail");
+    }
+}
+
 int main()
 {
     try {
@@ -500,6 +526,7 @@ int main()
         basicCrud();
         validationAndCorruption();
         attacksAndPermissions();
+        searchOnlyAncestors();
         crashRecovery();
         processConflicts();
         copyAndOwnerIsolation();
